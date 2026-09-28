@@ -32,6 +32,7 @@ import {
   placePiece,
   readPieces,
   removePiece,
+  replacePieces,
 } from '../src/page/pageOps';
 
 describe.each([
@@ -64,6 +65,25 @@ describe.each([
     expect(await removePiece(ctx, o.id)).toBe(true);
     pieces = await readPieces(ctx);
     expect(pieces.map(p => p.id)).toEqual([x.id]);
+  });
+
+  it('replaces every piece on the page, and only the pieces', async () => {
+    const ctx = await getContext();
+    mockNote.state.pages[0].elements.push({
+      type: 0,
+      numInPage: 900,
+      userData: '',
+    });
+    await placePiece(ctx, 'cone', {x: 100, y: 100});
+    await placePiece(ctx, 'ball', {x: 200, y: 200});
+    await replacePieces(ctx, [{kind: 'attacker', x: 500, y: 600}]);
+    const pieces = await readPieces(ctx);
+    expect(pieces.map(p => [p.kind, p.x, p.y])).toEqual([
+      ['attacker', 500, 600],
+    ]);
+    expect(
+      mockNote.state.pages[0].elements.some(e => e.numInPage === 900),
+    ).toBe(true);
   });
 
   it("leaves the user's own drawing alone", async () => {

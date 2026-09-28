@@ -204,10 +204,7 @@ function Device() {
     <View style={{ height: '100%', width: '100%', backgroundColor: '#ffffff' }}>
       <Backdrop />
       {config.simulateNote && (
-        <NotePage
-          pluginName={config.name}
-          onOpenPlugin={() => { setGeneration(g => g + 1); setOpen(true); }}
-        />
+        <NotePage onOpenPlugin={() => { if (!open) { setGeneration(g => g + 1); setOpen(true); } }} />
       )}
       {open
         ? <Panel key={generation} />

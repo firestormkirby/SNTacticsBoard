@@ -1,48 +1,57 @@
 /**
- * A browser stand-in for the native floating palette
- * (android/app/src/main/java/com/snsoccer/palette).
+ * A browser stand-in for the native floating button
+ * (android/app/src/main/java/com/snsoccer/palette/SoccerPaletteModule.kt).
  *
  * It installs itself as NativeModules.SoccerPalette, answers the same calls,
  * and sends the same "SoccerPalette" events, so the plugin's real controller
  * (src/palette/controller.ts) does the real page work against the simulated
- * note. The strip, the drag ghost and the move layer mirror the Kotlin views:
- * same controls, same order, same rules.
+ * note. Each native window is a div here, with the same sizes and rules:
  *
- * The mouse plays both parts: dragging on the palette or in move mode is the
- * finger; dragging anywhere else on the page is the pen.
+ *  BUTTON   Drag to move it. Click to open or close the palette. Hold 0.8 s
+ *           to open the menu.
+ *  PALETTE  Drag a piece out to place a new one.
+ *  HANDLES  An invisible box over each piece. Drag it to move the piece; drop
+ *           it on the button or the palette to remove it.
+ *
+ * Anywhere else, the mouse is the pen and draws on the page, as on a device.
  */
-import React, { useEffect, useReducer, useRef, useState } from 'react';
+import React, { useState, useSyncExternalStore } from 'react';
 import { DeviceEventEmitter, NativeModules } from 'react-native';
 
 import PieceGlyph from '../../../src/components/PieceGlyph';
 import type { PieceKind } from '../../../src/page/pieceShapes';
 
-type Side = 'left' | 'right';
-interface MovePiece { id: string; kind: PieceKind; x: number; y: number }
+interface Handle { kind: PieceKind; x: number; y: number }
+interface Rect { x: number; y: number; w: number; h: number }
 
 const KINDS: PieceKind[] = ['attacker', 'defender', 'cone', 'ball'];
-const ACTIONS: Array<[string, string]> = [
-  ['move', 'Move'], ['copy', 'Copy'], ['pitch', 'Pitch'], ['hide', 'Hide'],
-];
-const TILE = 60;
-const PAD = 6;
-const GRIP = 30;
-const ACTION_H = 48;
-const WIDTH = TILE + 2 * PAD;
-const HEIGHT = PAD + GRIP + KINDS.length * TILE + PAD + ACTIONS.length * ACTION_H + PAD;
-const MARGIN = 8;
+// dp and sp are CSS pixels here (the device presets are in dp).
+const BUTTON = 40;
+const TILE = 56;
+const PAD = Math.floor(TILE / 10);
+const TILES_W = TILE + 2 * PAD;
+const TILES_H = KINDS.length * TILE + 2 * PAD;
+const LONG_PRESS_MS = 800;
+const SLOP = 6;
 
 const state = {
   permission: false,
-  showing: false,
-  side: 'right' as Side,
-  y: null as number | null,
+  /** The button's top-left, or null when it isn't up. */
+  button: null as null | { x: number; y: number },
+  open: false,
   pieceSize: 63,
-  move: null as null | { pieces: MovePiece[]; size: number },
+  handles: new Map<string, Handle>(),
+  /** The handle being carried, and where its box is now. */
+  carrying: null as null | { id: string; x: number; y: number },
+  masks: [] as Rect[],
+  ghost: null as null | { kind: PieceKind; x: number; y: number },
+  tick: null as null | number,
 };
 const listeners = new Set<() => void>();
+let version = 0;
 function set(patch: Partial<typeof state>) {
   Object.assign(state, patch);
+  version++;
   for (const fn of listeners) fn();
 }
 
@@ -51,17 +60,48 @@ export function setPaletteState(patch: Partial<typeof state>) {
   set(patch);
 }
 
-const screen = () => ({
-  screenWidth: window.innerWidth, screenHeight: window.innerHeight, rotation: 0,
-});
 function emit(event: Record<string, unknown>) {
   DeviceEventEmitter.emit('SoccerPalette', event);
 }
+const point = (x: number, y: number, e: React.PointerEvent) => ({
+  x, y,
+  screenWidth: window.innerWidth,
+  screenHeight: window.innerHeight,
+  rotation: 0,
+  toolType: e.pointerType === 'pen' ? 2 : 1,
+});
 
-function paletteRect() {
-  const x = state.side === 'left' ? MARGIN : window.innerWidth - WIDTH - MARGIN;
-  const y = Math.max(0, Math.min(window.innerHeight - HEIGHT, state.y ?? (window.innerHeight - HEIGHT) / 2));
-  return { x, y, w: WIDTH, h: HEIGHT };
+const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), Math.max(lo, hi));
+const inside = (r: Rect | null, x: number, y: number) =>
+  !!r && x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+
+function buttonRect(): Rect | null {
+  return state.button && { ...state.button, w: BUTTON, h: BUTTON };
+}
+
+/** Beside the button: below it, or above if there's no room. */
+function tilesRect(): Rect | null {
+  const b = state.button;
+  if (!b || !state.open) return null;
+  const gap = 6;
+  const x = clamp(b.x + BUTTON / 2 - TILES_W / 2, 0, window.innerWidth - TILES_W);
+  const below = b.y + BUTTON + gap;
+  const y = below + TILES_H <= window.innerHeight ? below : Math.max(0, b.y - gap - TILES_H);
+  return { x, y, w: TILES_W, h: TILES_H };
+}
+
+const overControls = (x: number, y: number) =>
+  inside(buttonRect(), x, y) || inside(tilesRect(), x, y);
+
+const handleSize = () => Math.floor(state.pieceSize * 1.15);
+
+function hideAll() {
+  set({ button: null, handles: new Map(), carrying: null, masks: [], ghost: null });
+}
+
+function stopTick() {
+  if (state.tick !== null) window.clearInterval(state.tick);
+  state.tick = null;
 }
 
 NativeModules.SoccerPalette = {
@@ -76,32 +116,50 @@ NativeModules.SoccerPalette = {
   getScreenInfo: async () => ({
     width: window.innerWidth, height: window.innerHeight, density: 1, rotation: 0,
   }),
-  show: async (o: { side?: Side; y?: number; pieceSize?: number }) => {
+  show: async (o: { x?: number; y?: number; open?: boolean; pieceSize?: number }) => {
     if (!state.permission) return false;
+    const b = state.button ?? { x: window.innerWidth - BUTTON - 16, y: 120 };
     set({
-      showing: true,
-      side: o.side ?? state.side,
-      y: o.y ?? state.y,
       pieceSize: o.pieceSize ?? state.pieceSize,
+      open: o.open ?? state.open,
+      button: {
+        x: clamp(o.x ?? b.x, 0, window.innerWidth - BUTTON),
+        y: clamp(o.y ?? b.y, 0, window.innerHeight - BUTTON),
+      },
     });
     return true;
   },
-  hide: () => set({ showing: false, move: null }),
-  isShowing: async () => state.showing,
-  setMoveMode: (enabled: boolean, pieces: MovePiece[], size: number) =>
-    set({ move: enabled ? { pieces, size } : null }),
+  hide: hideAll,
+  isShowing: async () => state.button !== null,
+  setPieces: (pieces: Array<Handle & { id: string }>, size: number) => {
+    const handles = new Map<string, Handle>();
+    if (state.button) {
+      for (const p of pieces) handles.set(p.id, { kind: p.kind, x: p.x, y: p.y });
+    }
+    set({ pieceSize: Math.floor(size), handles, carrying: null, masks: [] });
+  },
+  startTicking: (ms: number) => {
+    if (state.tick !== null) return;
+    state.tick = window.setInterval(() => emit({ type: 'tick' }), Math.max(300, ms));
+  },
+  stopTicking: stopTick,
+  addListener: () => {},
+  removeListeners: () => {},
 };
 
+// useSyncExternalStore rather than a listener added in an effect: the panel
+// hides the button from its own mount effect, which can run before an effect
+// here would have subscribed, and that change would be missed.
+const subscribe = (fn: () => void) => {
+  listeners.add(fn);
+  return () => { listeners.delete(fn); };
+};
 function useStore() {
-  const [, redraw] = useReducer((n: number) => n + 1, 0);
-  useEffect(() => {
-    listeners.add(redraw);
-    return () => { listeners.delete(redraw); };
-  }, []);
+  useSyncExternalStore(subscribe, () => version);
 }
 
-const abs = (x: number, y: number, w: number, h: number): React.CSSProperties => ({
-  position: 'absolute', left: x, top: y, width: w, height: h,
+const abs = (r: Rect): React.CSSProperties => ({
+  position: 'absolute', left: r.x, top: r.y, width: r.w, height: r.h,
 });
 
 function Glyph({ kind, size }: { kind: PieceKind; size: number }) {
@@ -112,135 +170,184 @@ function Glyph({ kind, size }: { kind: PieceKind; size: number }) {
   );
 }
 
-function Strip() {
-  const r = paletteRect();
-  const [ghost, setGhost] = useState<{ kind: PieceKind; x: number; y: number } | null>(null);
-  const [grip, setGrip] = useState<{ x: number; y: number } | null>(null);
-  const [pressed, setPressed] = useState<string | null>(null);
-  const x = grip?.x ?? r.x;
-  const y = grip?.y ?? r.y;
-  const inside = (cx: number, cy: number) => cx >= r.x && cx <= r.x + r.w && cy >= r.y && cy <= r.y + r.h;
-
+/** The plugin's icon, as Glyphs.drawPitchIcon draws it. */
+function PitchIcon({ size, color }: { size: number; color: string }) {
+  const w = size * 0.62;
+  const h = size * 0.86;
+  const bw = w * 0.5;
+  const bh = h * 0.14;
+  const sw = Math.max(2, size * 0.07);
+  const l = (size - w) / 2;
+  const t = (size - h) / 2;
+  const c = size / 2;
   return (
-    <>
-      <div style={{ ...abs(x, y, WIDTH, HEIGHT), background: '#fff', border: '2px solid #000', boxSizing: 'border-box', zIndex: 50, userSelect: 'none', touchAction: 'none' }}>
-        <div
-          title="Drag to move the palette"
-          style={{ ...abs(PAD, PAD, TILE, GRIP), cursor: 'grab', display: 'flex', alignItems: 'center', justifyContent: 'center', font: '20px system-ui', background: grip ? '#000' : '#fff', color: grip ? '#fff' : '#000' }}
-          onPointerDown={e => {
-            (e.target as Element).setPointerCapture(e.pointerId);
-            setGrip({ x: r.x, y: r.y });
-          }}
-          onPointerMove={e => grip && setGrip({ x: e.clientX - WIDTH / 2, y: e.clientY - PAD - GRIP / 2 })}
-          onPointerUp={e => {
-            if (!grip) return;
-            const side: Side = e.clientX < window.innerWidth / 2 ? 'left' : 'right';
-            const top = Math.round(Math.max(0, Math.min(window.innerHeight - HEIGHT, grip.y)));
-            setGrip(null);
-            set({ side, y: top });
-            emit({ type: 'position', side, y: top });
-          }}
-        >⠿</div>
-        {KINDS.map((kind, i) => (
-          <div
-            key={kind}
-            title="Drag onto the page"
-            style={{ ...abs(PAD, PAD + GRIP + i * TILE, TILE, TILE), cursor: 'grab', display: 'flex', alignItems: 'center', justifyContent: 'center', background: pressed === kind ? '#000' : '#fff' }}
-            onPointerDown={e => {
-              (e.target as Element).setPointerCapture(e.pointerId);
-              setPressed(kind);
-              setGhost({ kind, x: e.clientX, y: e.clientY });
-            }}
-            onPointerMove={e => ghost && setGhost({ kind, x: e.clientX, y: e.clientY })}
-            onPointerUp={e => {
-              setPressed(null);
-              setGhost(null);
-              if (inside(e.clientX, e.clientY)) {
-                emit({ type: 'tapPiece', kind });
-              } else {
-                emit({ type: 'drop', kind, toolType: 1, x: e.clientX, y: e.clientY, ...screen() });
-              }
-            }}
-          >
-            <Glyph kind={kind} size={Math.round(TILE * 0.62)} />
-          </div>
-        ))}
-        {ACTIONS.map(([action, label], i) => (
-          <button
-            key={action}
-            style={{ ...abs(PAD, 2 * PAD + GRIP + KINDS.length * TILE + i * ACTION_H, TILE, ACTION_H), border: 0, borderTop: '1px solid #000', background: '#fff', color: '#000', font: '700 15px system-ui', cursor: 'pointer', padding: 0 }}
-            onClick={() => {
-              if (action === 'hide') set({ showing: false, move: null });
-              emit({ type: 'action', action });
-            }}
-          >{label}</button>
-        ))}
-      </div>
-      {ghost && (
-        <div style={{ ...abs(ghost.x - state.pieceSize / 2, ghost.y - state.pieceSize / 2, state.pieceSize, state.pieceSize), pointerEvents: 'none', zIndex: 60 }}>
-          <Glyph kind={ghost.kind} size={state.pieceSize} />
-        </div>
-      )}
-    </>
+    <svg width={size} height={size} style={{ display: 'block' }}>
+      <g fill="none" stroke={color} strokeWidth={sw}>
+        <rect x={l} y={t} width={w} height={h} />
+        <line x1={l} y1={c} x2={l + w} y2={c} />
+        <circle cx={c} cy={c} r={w * 0.2} />
+        <rect x={c - bw / 2} y={t} width={bw} height={bh} />
+        <rect x={c - bw / 2} y={t + h - bh} width={bw} height={bh} />
+      </g>
+    </svg>
   );
 }
 
-function MoveLayer({ pieces, size }: { pieces: MovePiece[]; size: number }) {
-  const [drag, setDrag] = useState<{ id: string; x: number; y: number; downX: number; downY: number } | null>(null);
-  const [local, setLocal] = useState(pieces);
-  const layer = useRef<HTMLDivElement>(null);
-  useEffect(() => setLocal(pieces), [pieces]);
-
-  const trash = paletteRect();
-  const inTrash = (x: number, y: number) =>
-    x >= trash.x && x <= trash.x + trash.w && y >= trash.y && y <= trash.y + trash.h;
-  const hit = Math.max(size * 1.3, 56);
-  const BANNER = 64;
+function Button() {
+  const r = buttonRect()!;
+  const [press, setPress] = useState<null | {
+    downX: number; downY: number; startX: number; startY: number;
+    dragging: boolean; longPressed: boolean; timer: number;
+  }>(null);
+  const stroke = Math.max(2, BUTTON * 0.05);
+  const ink = state.open ? '#fff' : '#000';
 
   return (
     <div
-      ref={layer}
-      style={{ position: 'absolute', inset: 0, zIndex: 70, touchAction: 'none', userSelect: 'none' }}
-      onPointerDown={e => {
-        const target = [...local].reverse().find(p => Math.abs(p.x - e.clientX) <= hit / 2 && Math.abs(p.y - e.clientY) <= hit / 2);
-        if (!target) return;
-        layer.current!.setPointerCapture(e.pointerId);
-        setDrag({ id: target.id, x: e.clientX, y: e.clientY, downX: e.clientX, downY: e.clientY });
+      title="Click: pieces · drag: move · hold: menu"
+      style={{
+        ...abs(r), zIndex: 52, borderRadius: '50%', boxSizing: 'border-box',
+        border: `${stroke}px solid #000`, background: state.open ? '#000' : '#fff',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        cursor: 'pointer', touchAction: 'none', userSelect: 'none',
       }}
-      onPointerMove={e => drag && setDrag({ ...drag, x: e.clientX, y: e.clientY })}
-      onPointerUp={e => {
-        if (!drag) return;
-        setDrag(null);
-        if (inTrash(e.clientX, e.clientY)) {
-          setLocal(local.filter(p => p.id !== drag.id));
-          emit({ type: 'remove', id: drag.id });
-        } else if (Math.hypot(e.clientX - drag.downX, e.clientY - drag.downY) > 8) {
-          setLocal(local.map(p => (p.id === drag.id ? { ...p, x: e.clientX, y: e.clientY } : p)));
-          emit({ type: 'move', id: drag.id, toolType: 1, x: e.clientX, y: e.clientY, ...screen() });
+      onPointerDown={e => {
+        (e.target as Element).setPointerCapture(e.pointerId);
+        const timer = window.setTimeout(() => {
+          setPress(p => p && { ...p, longPressed: true });
+          emit({ type: 'longPress' });
+        }, LONG_PRESS_MS);
+        setPress({
+          downX: e.clientX, downY: e.clientY, startX: r.x, startY: r.y,
+          dragging: false, longPressed: false, timer,
+        });
+      }}
+      onPointerMove={e => {
+        if (!press || press.longPressed) return;
+        const dx = e.clientX - press.downX;
+        const dy = e.clientY - press.downY;
+        const dragging = press.dragging || Math.abs(dx) > SLOP || Math.abs(dy) > SLOP;
+        if (!dragging) return;
+        if (!press.dragging) {
+          window.clearTimeout(press.timer);
+          setPress({ ...press, dragging: true });
+        }
+        set({
+          button: {
+            x: clamp(press.startX + dx, 0, window.innerWidth - BUTTON),
+            y: clamp(press.startY + dy, 0, window.innerHeight - BUTTON),
+          },
+        });
+      }}
+      onPointerUp={() => {
+        if (!press) return;
+        window.clearTimeout(press.timer);
+        setPress(null);
+        if (press.longPressed || !state.button) return; // the hold opened the menu
+        if (press.dragging) {
+          emit({ type: 'position', x: Math.round(state.button.x), y: Math.round(state.button.y) });
+        } else {
+          set({ open: !state.open });
+          emit({ type: 'open', open: state.open });
         }
       }}
     >
-      <div style={{ ...abs(0, 0, window.innerWidth, BANNER), background: '#fff', borderBottom: '3px solid #000', display: 'flex', alignItems: 'center', gap: 16, padding: '0 12px 0 16px', boxSizing: 'border-box', font: '19px system-ui', color: '#000' }}>
-        <span style={{ flex: 1 }}>Drag pieces with your finger. Drop one on the palette to remove it.</span>
-        <button
-          style={{ height: 44, width: 120, background: '#000', color: '#fff', border: 0, font: '700 19px system-ui', cursor: 'pointer' }}
-          onPointerDown={e => e.stopPropagation()}
-          onClick={() => { set({ move: null }); emit({ type: 'action', action: 'moveDone' }); }}
-        >Done</button>
-      </div>
-      <div style={{ ...abs(trash.x, trash.y, trash.w, trash.h), boxSizing: 'border-box', border: '3px solid #000', background: drag && inTrash(drag.x, drag.y) ? '#000' : '#fff', color: drag && inTrash(drag.x, drag.y) ? '#fff' : '#000', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <span style={{ transform: 'rotate(-90deg)', whiteSpace: 'nowrap', font: '19px system-ui' }}>Drop here to remove</span>
-      </div>
-      {local.map(p => (drag?.id === p.id ? (
-        <div key={p.id} style={{ ...abs(p.x - size / 2 - 2, p.y - size / 2 - 2, size + 4, size + 4), background: '#fff' }} />
-      ) : (
-        <div key={p.id} style={{ ...abs(p.x - hit / 2, p.y - hit / 2, hit, hit), border: '2px dashed #000', boxSizing: 'border-box', pointerEvents: 'none' }} />
-      )))}
-      {drag && (
-        <div style={{ ...abs(drag.x - size / 2, drag.y - size / 2, size, size), pointerEvents: 'none' }}>
-          <Glyph kind={local.find(p => p.id === drag.id)?.kind ?? 'ball'} size={size} />
+      <PitchIcon size={(BUTTON / 2 - stroke) * 1.25} color={ink} />
+    </div>
+  );
+}
+
+function Tiles() {
+  const r = tilesRect()!;
+  const [drag, setDrag] = useState<null | { kind: PieceKind; downX: number; downY: number }>(null);
+
+  return (
+    <div
+      style={{
+        ...abs(r), zIndex: 52, background: '#fff', boxSizing: 'border-box',
+        border: `${Math.max(2, TILE * 0.04)}px solid #000`, touchAction: 'none', userSelect: 'none',
+      }}
+      onPointerDown={e => {
+        const i = Math.floor((e.clientY - r.y - PAD) / TILE);
+        const kind = KINDS[i];
+        if (!kind) return;
+        (e.currentTarget as Element).setPointerCapture(e.pointerId);
+        setDrag({ kind, downX: e.clientX, downY: e.clientY });
+        set({ ghost: { kind, x: e.clientX, y: e.clientY } });
+      }}
+      onPointerMove={e => drag && set({ ghost: { kind: drag.kind, x: e.clientX, y: e.clientY } })}
+      onPointerUp={e => {
+        if (!drag) return;
+        setDrag(null);
+        set({ ghost: null });
+        const moved = Math.abs(e.clientX - drag.downX) > 8 || Math.abs(e.clientY - drag.downY) > 8;
+        if (moved && !overControls(e.clientX, e.clientY)) {
+          emit({ type: 'drop', kind: drag.kind, ...point(e.clientX, e.clientY, e) });
+        } else if (!moved) {
+          emit({ type: 'tapPiece', kind: drag.kind });
+        }
+      }}
+    >
+      {KINDS.map((kind, i) => (
+        <div
+          key={kind}
+          title="Drag onto the page"
+          style={{
+            position: 'absolute', left: PAD - 2, top: PAD - 2 + i * TILE, width: TILE, height: TILE,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'grab',
+            background: drag?.kind === kind ? '#000' : 'transparent', pointerEvents: 'none',
+          }}
+        >
+          <Glyph kind={kind} size={Math.round(TILE * 0.62)} />
         </div>
-      )}
+      ))}
+    </div>
+  );
+}
+
+function PieceHandle({ id, piece }: { id: string; piece: Handle }) {
+  const hs = handleSize();
+  const [press, setPress] = useState<null | { downX: number; downY: number; dragging: boolean }>(null);
+  const start = { x: piece.x - hs / 2, y: piece.y - hs / 2 };
+  const carried = state.carrying?.id === id ? state.carrying : null;
+  const at = carried ?? start;
+
+  return (
+    <div
+      title="Drag to move · drop on the button to remove"
+      style={{
+        ...abs({ ...at, w: hs, h: hs }), zIndex: carried ? 51 : 50, cursor: 'grab', touchAction: 'none',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}
+      onPointerDown={e => {
+        (e.target as Element).setPointerCapture(e.pointerId);
+        setPress({ downX: e.clientX, downY: e.clientY, dragging: false });
+      }}
+      onPointerMove={e => {
+        if (!press) return;
+        const dx = e.clientX - press.downX;
+        const dy = e.clientY - press.downY;
+        if (!press.dragging) {
+          if (Math.abs(dx) <= SLOP && Math.abs(dy) <= SLOP) return;
+          // Hide the piece the note still draws at its old spot, and carry a copy.
+          setPress({ ...press, dragging: true });
+          set({ masks: [...state.masks, { ...start, w: hs, h: hs }] });
+        }
+        set({ carrying: { id, x: start.x + dx, y: start.y + dy } });
+      }}
+      onPointerUp={e => {
+        if (!press) return;
+        setPress(null);
+        if (!press.dragging || !state.carrying) return;
+        if (overControls(e.clientX, e.clientY)) {
+          emit({ type: 'remove', id });
+        } else {
+          emit({ type: 'move', id, ...point(state.carrying.x + hs / 2, state.carrying.y + hs / 2, e) });
+        }
+        // Carry and mask stay until the controller calls setPieces.
+      }}
+    >
+      {carried && <Glyph kind={piece.kind} size={Math.round(hs * 0.85)} />}
     </div>
   );
 }
@@ -248,10 +355,21 @@ function MoveLayer({ pieces, size }: { pieces: MovePiece[]; size: number }) {
 /** Mounted by the harness above the panel and the note (config.Overlay). */
 export default function PaletteOverlay() {
   useStore();
+  if (!state.button) return null;
+  const size = state.pieceSize;
   return (
     <>
-      {state.showing && <Strip />}
-      {state.move && <MoveLayer pieces={state.move.pieces} size={state.move.size} />}
+      {state.masks.map((m, i) => (
+        <div key={i} style={{ ...abs(m), zIndex: 49, background: '#fff', pointerEvents: 'none' }} />
+      ))}
+      {[...state.handles].map(([id, piece]) => <PieceHandle key={id} id={id} piece={piece} />)}
+      <Button />
+      {state.open && <Tiles />}
+      {state.ghost && (
+        <div style={{ ...abs({ x: state.ghost.x - size / 2, y: state.ghost.y - size / 2, w: size, h: size }), pointerEvents: 'none', zIndex: 60 }}>
+          <Glyph kind={state.ghost.kind} size={Math.round(size * 0.9)} />
+        </div>
+      )}
     </>
   );
 }

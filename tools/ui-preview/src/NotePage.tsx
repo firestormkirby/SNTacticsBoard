@@ -8,6 +8,10 @@
  * - Pen strokes. Drag the mouse on the page to write, as with the pen; they
  *   are stored as elements like any other, so copying a page copies them.
  *
+ * No toolbar: the page fills the screen, as it does on a device, where the
+ * Note app's own toolbar turns pages and opens plugins. Keys stand in for it:
+ * PageUp / PageDown (or the arrow keys) turn the page, P opens the plugin.
+ *
  * Plain DOM rather than React Native: this is the harness, not the plugin.
  */
 import React, { useEffect, useReducer, useRef, useState } from 'react';
@@ -16,8 +20,6 @@ import { CURRENT_PAGE } from './mocks/sn-plugin-lib';
 import {
   MockElement, MockPoint, NOTE, addElements, goToPage, imageFor, onNoteChange,
 } from './mocks/note';
-
-const TOOLBAR_H = 56;
 
 function Template({ path }: { path: string }) {
   const holder = useRef<HTMLDivElement>(null);
@@ -75,9 +77,8 @@ function Shape({ el }: { el: MockElement }) {
   return null;
 }
 
-export default function NotePage({ pluginName, onOpenPlugin }: {
-  pluginName: string;
-  /** Tapping the plugin's toolbar button. */
+export default function NotePage({ onOpenPlugin }: {
+  /** The Note app's toolbar button for the plugin (the P key here). */
   onOpenPlugin: () => void;
 }) {
   const [, redraw] = useReducer((n: number) => n + 1, 0);
@@ -85,6 +86,20 @@ export default function NotePage({ pluginName, onOpenPlugin }: {
   const svg = useRef<SVGSVGElement>(null);
 
   useEffect(() => onNoteChange(redraw), []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      if (e.key === 'PageDown' || e.key === 'ArrowRight' || e.key === 'ArrowDown') goToPage(NOTE.current + 1);
+      else if (e.key === 'PageUp' || e.key === 'ArrowLeft' || e.key === 'ArrowUp') goToPage(NOTE.current - 1);
+      else if (e.key === 'p' || e.key === 'P') onOpenPlugin();
+      else return;
+      e.preventDefault();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onOpenPlugin]);
 
   const page = NOTE.pages[NOTE.current];
   if (!page) return null;
@@ -123,32 +138,6 @@ export default function NotePage({ pluginName, onOpenPlugin }: {
           />
         )}
       </svg>
-
-      <div
-        style={{
-          position: 'absolute', left: 0, right: 0, top: 0, height: TOOLBAR_H,
-          display: 'flex', alignItems: 'center', gap: 12, padding: '0 16px',
-          background: '#fff', borderBottom: '2px solid #000',
-          font: '600 17px/1 system-ui, sans-serif', color: '#000',
-        }}
-      >
-        <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {CURRENT_PAGE.filePath.split('/').pop()} · the pen is your mouse
-        </span>
-        <button style={btn} onClick={() => goToPage(NOTE.current - 1)} aria-label="Previous page">‹</button>
-        <span style={{ fontVariantNumeric: 'tabular-nums' }}>
-          {NOTE.current + 1} / {NOTE.pages.length}
-        </span>
-        <button style={btn} onClick={() => goToPage(NOTE.current + 1)} aria-label="Next page">›</button>
-        <button style={{ ...btn, background: '#000', color: '#fff' }} onClick={onOpenPlugin}>
-          {pluginName}
-        </button>
-      </div>
     </div>
   );
 }
-
-const btn: React.CSSProperties = {
-  font: 'inherit', border: '2px solid #000', background: '#fff', color: '#000',
-  padding: '6px 12px', borderRadius: 6, cursor: 'pointer',
-};

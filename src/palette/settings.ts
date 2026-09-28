@@ -1,37 +1,50 @@
-/** Where the palette sits and whether it was left showing, in AsyncStorage. */
+/** The floating button's place and state, in AsyncStorage. */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-import type {Side} from './bridge';
-
 export interface PaletteSettings {
-  side: Side;
-  /** Top of the palette in screen pixels; null means centred. */
+  /** Whether the button is switched on. */
+  visible: boolean;
+  /** Button's top-left in screen pixels; null means the default spot. */
+  x: number | null;
   y: number | null;
+  /** Whether the palette was left open. */
+  open: boolean;
 }
 
-const KEY = 'snsoccer:palette:v1';
-const DEFAULTS: PaletteSettings = {side: 'right', y: null};
+const KEY = 'snsoccer:palette:v2';
+const DEFAULTS: PaletteSettings = {
+  visible: false,
+  x: null,
+  y: null,
+  open: false,
+};
+
+const num = (v: unknown) =>
+  typeof v === 'number' && Number.isFinite(v) ? v : null;
 
 export async function loadPaletteSettings(): Promise<PaletteSettings> {
   try {
     const json = await AsyncStorage.getItem(KEY);
-    const saved = json ? (JSON.parse(json) as Partial<PaletteSettings>) : {};
+    const s = json ? (JSON.parse(json) as Partial<PaletteSettings>) : {};
     return {
-      side: saved.side === 'left' ? 'left' : 'right',
-      y:
-        typeof saved.y === 'number' && Number.isFinite(saved.y)
-          ? saved.y
-          : null,
+      visible: s.visible === true,
+      x: num(s.x),
+      y: num(s.y),
+      open: s.open === true,
     };
   } catch {
     return DEFAULTS;
   }
 }
 
-export async function savePaletteSettings(s: PaletteSettings): Promise<void> {
+export async function updatePaletteSettings(
+  patch: Partial<PaletteSettings>,
+): Promise<PaletteSettings> {
+  const next = {...(await loadPaletteSettings()), ...patch};
   try {
-    await AsyncStorage.setItem(KEY, JSON.stringify(s));
+    await AsyncStorage.setItem(KEY, JSON.stringify(next));
   } catch (e) {
     console.warn('[snsoccer] could not save palette settings', e);
   }
+  return next;
 }

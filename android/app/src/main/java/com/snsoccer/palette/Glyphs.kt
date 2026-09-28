@@ -61,6 +61,29 @@ object Glyphs {
         }
     }
 
+    /**
+     * The plugin's icon, a small pitch: outline, halfway line, centre circle
+     * and the two goal boxes. Drawn as vectors so it stays crisp at any size.
+     */
+    fun drawPitchIcon(canvas: Canvas, cx: Float, cy: Float, size: Float, color: Int) {
+        val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            this.color = color
+            style = Paint.Style.STROKE
+            strokeWidth = maxOf(2f, size * 0.07f)
+        }
+        val w = size * 0.62f
+        val h = size * 0.86f
+        val l = cx - w / 2
+        val t = cy - h / 2
+        canvas.drawRect(l, t, l + w, t + h, p)
+        canvas.drawLine(l, cy, l + w, cy, p)
+        canvas.drawCircle(cx, cy, w * 0.2f, p)
+        val bw = w * 0.5f
+        val bh = h * 0.14f
+        canvas.drawRect(cx - bw / 2, t, cx + bw / 2, t + bh, p)
+        canvas.drawRect(cx - bw / 2, t + h - bh, cx + bw / 2, t + h, p)
+    }
+
     private fun triangle(cx: Float, cy: Float, w: Float, h: Float): Path =
         Path().apply {
             moveTo(cx, cy - h / 2)

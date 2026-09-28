@@ -361,6 +361,49 @@ export async function removePiece(
   return true;
 }
 
+/**
+ * Swap every piece on this page for a new set, as when loading a saved
+ * layout. Only the plugin's own pieces go; the drawing stays.
+ */
+export async function replacePieces(
+  ctx: PageContext,
+  placements: Array<{kind: PieceKind; x: number; y: number}>,
+): Promise<PieceTag[]> {
+  const old = await readPieces(ctx);
+  const byLayer = new Map<number, number[]>();
+  for (const p of old) {
+    byLayer.set(p.layer, [...(byLayer.get(p.layer) ?? []), ...p.nums]);
+  }
+  for (const [layer, nums] of byLayer) {
+    check(
+      await PluginCommAPI.deletePageElements(descending(nums), ctx.page, layer),
+      'deletePageElements',
+    );
+  }
+
+  const layer = await piecesLayer(ctx);
+  const size = pieceSizeFor(ctx.pageSize.width);
+  const tags: PieceTag[] = [];
+  const elements: object[] = [];
+  for (const p of placements) {
+    const tag: PieceTag = {
+      kind: p.kind,
+      id: newPieceId(),
+      ...clampToPage(ctx, p),
+    };
+    tags.push(tag);
+    elements.push(...(await buildElements(tag, size, layer)));
+  }
+  if (elements.length > 0) {
+    check(
+      await PluginCommAPI.insertPageElements(elements, ctx.page, layer),
+      'insertPageElements',
+    );
+  }
+  await saveRegistry(ctx, tags);
+  return tags;
+}
+
 // ── Pages ───────────────────────────────────────────────────────────────────
 
 /** Index the new page takes: straight after the current one. */

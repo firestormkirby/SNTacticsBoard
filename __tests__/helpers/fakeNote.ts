@@ -106,6 +106,7 @@ export function createFakeNote(opts: {dropsUserData?: boolean} = {}) {
     },
     PluginManager: {
       closePluginView: () => Promise.resolve(true),
+      showPluginView: () => Promise.resolve(true),
     },
     FileUtils: {
       getExportPath: () => Promise.resolve('/storage/emulated/0/EXPORT'),

@@ -94,7 +94,9 @@ export interface PreviewConfig {
   /**
    * Draw a simulated note page (NotePage.tsx) under the panel instead of the
    * "Panel closed" card: the in-memory note's current page, with whatever the
-   * plugin wrote to it, and mouse drawing standing in for the pen.
+   * plugin wrote to it, and mouse drawing standing in for the pen. Like the
+   * device's page it has no toolbar of its own: PageUp / PageDown turn the
+   * page and P opens the plugin, as the Note app's toolbar would.
    */
   simulateNote?: boolean;
   /**

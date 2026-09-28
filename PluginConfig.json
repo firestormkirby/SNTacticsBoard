@@ -1,6 +1,6 @@
 {
   "name": "Soccer Board",
-  "desc": "Coach's whiteboard for your notes: draw with the pen, and drag players, cones and balls onto the page from a floating palette.",
+  "desc": "Coach's whiteboard for your notes: draw with the pen, and drag players, cones and balls onto the page from a floating button, and save layouts to load later.",
   "iconPath": "assets/icon.png",
   "versionName": "0.1.0",
   "versionCode": "1",

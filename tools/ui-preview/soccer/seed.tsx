@@ -27,7 +27,7 @@ export async function preparePitchImage(): Promise<string> {
 type Placement = [PieceKind, number, number];
 
 /** A 4v2 rondo in a coned square, with an exit gate, as page fractions. */
-const RONDO: Placement[] = [
+export const RONDO: Placement[] = [
   ['cone', 0.38, 0.40], ['cone', 0.62, 0.40], ['cone', 0.38, 0.60], ['cone', 0.62, 0.60],
   ['cone', 0.45, 0.76], ['cone', 0.55, 0.76],
   ['attacker', 0.50, 0.41], ['attacker', 0.39, 0.50], ['attacker', 0.61, 0.50], ['attacker', 0.50, 0.59],

@@ -1,6 +1,7 @@
 import React from 'react';
 import ReactTestRenderer from 'react-test-renderer';
 import {NativeModules} from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 NativeModules.SoccerPalette = {
   canDrawOverlays: jest.fn(async () => false),
@@ -14,47 +15,69 @@ NativeModules.SoccerPalette = {
   show: jest.fn(async () => true),
   hide: jest.fn(),
   isShowing: jest.fn(async () => false),
-  setMoveMode: jest.fn(),
+  setPieces: jest.fn(),
+  startTicking: jest.fn(),
+  stopTicking: jest.fn(),
 };
 
 import App from '../App';
+import {saveLayout} from '../src/layouts/layoutStore';
 
 const text = (root: ReactTestRenderer.ReactTestRenderer) =>
   JSON.stringify(root.toJSON());
+const button = (root: ReactTestRenderer.ReactTestRenderer, label: string) =>
+  root.root.find(
+    n =>
+      n.props.accessibilityLabel === label &&
+      typeof n.props.onPress === 'function',
+  );
 
-it('asks for the overlay permission before showing the palette', async () => {
+async function mount() {
   let root!: ReactTestRenderer.ReactTestRenderer;
   await ReactTestRenderer.act(async () => {
     root = ReactTestRenderer.create(<App />);
   });
-  expect(text(root)).toContain('Pen draws, finger moves.');
-  expect(text(root)).toContain('Allow the palette');
+  return root;
+}
 
-  const allow = root.root.find(
-    n =>
-      n.props.accessibilityLabel === 'Allow the palette' &&
-      typeof n.props.onPress === 'function',
+beforeEach(async () => {
+  await AsyncStorage.clear();
+  jest.clearAllMocks();
+});
+
+it('asks for the overlay permission before the button can show', async () => {
+  const root = await mount();
+  expect(text(root)).toContain('Allow the button');
+  await ReactTestRenderer.act(async () =>
+    button(root, 'Allow the button').props.onPress(),
   );
-  await ReactTestRenderer.act(async () => allow.props.onPress());
   expect(
     NativeModules.SoccerPalette.requestOverlayPermission,
   ).toHaveBeenCalled();
 });
 
-it('shows the palette and returns to the note once allowed', async () => {
+it('offers both exports and lists saved layouts', async () => {
   NativeModules.SoccerPalette.canDrawOverlays.mockResolvedValue(true);
-  let root!: ReactTestRenderer.ReactTestRenderer;
-  await ReactTestRenderer.act(async () => {
-    root = ReactTestRenderer.create(<App />);
+  await saveLayout('Rondo 4v2', [{kind: 'cone', x: 10, y: 10}], {
+    width: 1404,
+    height: 1872,
   });
-  const show = root.root.find(
-    n =>
-      n.props.accessibilityLabel === 'Show the palette' &&
-      typeof n.props.onPress === 'function',
-  );
-  await ReactTestRenderer.act(async () => show.props.onPress());
-  expect(NativeModules.SoccerPalette.show).toHaveBeenCalledWith(
-    expect.objectContaining({side: 'right', pieceSize: 63}),
+  const root = await mount();
+  const t = text(root);
+  expect(t).toContain('Show the button');
+  expect(t).toContain('Copy to a new page');
+  expect(t).toContain('Save the layout');
+  expect(t).toContain('Rondo 4v2');
+  expect(t).toContain('1 piece');
+  // Nothing on the page yet, so there is nothing to save.
+  expect(button(root, 'Save').props.disabled).toBe(true);
+});
+
+it('shows the button by closing the menu', async () => {
+  NativeModules.SoccerPalette.canDrawOverlays.mockResolvedValue(true);
+  const root = await mount();
+  await ReactTestRenderer.act(async () =>
+    button(root, 'Show the button').props.onPress(),
   );
   const {PluginManager} = require('sn-plugin-lib');
   expect(PluginManager.closePluginView).toHaveBeenCalled();

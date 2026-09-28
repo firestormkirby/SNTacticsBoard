@@ -2,7 +2,7 @@
   "name": "snsoccer",
   "version": "0.1.0",
   "private": true,
-  "description": "Coach's whiteboard for Supernote notes: draw with the pen, and drag players, cones and balls onto the page from a floating palette.",
+  "description": "Coach's whiteboard for Supernote notes: draw with the pen, and drag players, cones and balls onto the page from a floating button, and save layouts to load later.",
   "scripts": {
     "build:plugin": "node scripts/build-plugin.js",
     "preview": "npm --prefix tools/ui-preview run dev",
