@@ -82,7 +82,8 @@ it('offers both exports and lists saved layouts', async () => {
   const size = {width: 1404, height: 1872};
   await saveLayout('Old pieces', [{kind: 'cone', x: 10, y: 10}], size, 1);
   await saveLayout('Rondo 4v2', [{kind: 'ball', x: 9, y: 9}], size, 2, {
-    libPage: 0,
+    keyword: '~BOARD:Soccer Field:Rondo 4v2',
+    template: 'Soccer Field',
     background: 'bg.png',
     marks: 12,
   });
@@ -90,7 +91,7 @@ it('offers both exports and lists saved layouts', async () => {
   const t = text(root);
   expect(t).toContain('Copy to a new page');
   expect(t).toContain('Save this page');
-  expect(t).toContain('Page with 1 piece and drawing');
+  expect(t).toContain('Soccer Field page with 1 piece and drawing');
   expect(t).toContain('1 piece only');
   const count = (label: string) =>
     t.split(`"accessibilityLabel":"${label}"`).length - 1;

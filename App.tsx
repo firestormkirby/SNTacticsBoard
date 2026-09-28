@@ -32,6 +32,7 @@ import PitchSheet from './src/components/PitchSheet';
 import {
   SavedLayout,
   deleteLayout,
+  hasPage,
   listLayouts,
 } from './src/layouts/layoutStore';
 import {hasPitch, pageSizeForScreen, savePitch} from './src/page/capture';
@@ -195,7 +196,13 @@ export default function App(): React.JSX.Element {
         />
       )}
 
-      <View style={styles.screen}>
+      {/* Tapping the page around the menu closes it, as in Modulanner. */}
+      <Pressable
+        style={StyleSheet.absoluteFill}
+        onPress={close}
+        accessibilityLabel="Close the menu"
+      />
+      <View style={styles.card}>
         <View style={styles.header}>
           <Text style={styles.title}>Soccer Board</Text>
           <Button label="✕" onPress={close} square accessibilityLabel="Close" />
@@ -309,7 +316,7 @@ export default function App(): React.JSX.Element {
                       </Text>
                     </View>
                     <View style={styles.row}>
-                      {l.libPage !== undefined && (
+                      {hasPage(l) && (
                         <Button
                           label="New page"
                           primary
@@ -322,7 +329,7 @@ export default function App(): React.JSX.Element {
                       {l.pieces.length > 0 && (
                         <Button
                           label="Pieces here"
-                          primary={l.libPage === undefined}
+                          primary={!hasPage(l)}
                           onPress={() =>
                             closePanelThen(() =>
                               loadLayoutHere(l.name, l.pieces),
@@ -380,13 +387,16 @@ export default function App(): React.JSX.Element {
 /** What a saved layout holds, in a few words. */
 function describe(l: SavedLayout): string {
   const pieces = plural(l.pieces.length, 'piece');
-  if (l.libPage === undefined) {
+  if (!hasPage(l)) {
     return `${pieces} only`;
   }
+  const page = l.template ? `${l.template} page` : 'Page';
   if (l.pieces.length === 0) {
-    return l.marks ? 'Page with drawing' : 'Blank page';
+    return l.marks ? `${page} with drawing` : page;
   }
-  return l.marks ? `Page with ${pieces} and drawing` : `Page with ${pieces}`;
+  return l.marks
+    ? `${page} with ${pieces} and drawing`
+    : `${page} with ${pieces}`;
 }
 
 /** Whether the button can come up, and what to do if not. */
@@ -528,11 +538,28 @@ function Button({
 }
 
 const styles = StyleSheet.create({
-  root: {flex: 1, backgroundColor: PAPER},
-  screen: {...StyleSheet.absoluteFillObject, backgroundColor: PAPER},
+  // A popout rather than a full screen: the root is see-through, so the note
+  // shows around the card (Modulanner's panel does the same). While the
+  // pitch background is first being drawn it shows there too, briefly.
+  root: {
+    flex: 1,
+    backgroundColor: 'transparent',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  card: {
+    width: '67%',
+    height: '67%',
+    minWidth: 560,
+    backgroundColor: PAPER,
+    borderWidth: 3, // a thick border stands in for a shadow on e-ink
+    borderColor: INK,
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
 
   header: {
-    height: 76,
+    height: 68,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -540,14 +567,11 @@ const styles = StyleSheet.create({
     borderBottomWidth: 3,
     borderBottomColor: INK,
   },
-  title: {fontSize: 26, fontWeight: 'bold', color: INK},
+  title: {fontSize: 24, fontWeight: 'bold', color: INK},
 
   body: {
-    padding: 28,
-    gap: 26,
-    maxWidth: 760,
-    width: '100%',
-    alignSelf: 'center',
+    padding: 24,
+    gap: 22,
   },
   para: {fontSize: 18, lineHeight: 27, color: INK},
   dim: {color: DIM},

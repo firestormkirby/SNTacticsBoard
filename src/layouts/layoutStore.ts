@@ -2,11 +2,15 @@
  * Saved layouts: a page saved under a name, to use again later.
  *
  * The page itself, background, drawing and pieces, lives in the layouts note
- * (pageOps.ts), at `libPage`; loading it adds a copy as a new page. The list
- * here names those pages, and also keeps the pieces' positions as fractions
- * of the page, so "just the pieces" can go onto any page, on any device.
+ * (pageOps.ts), tagged with `keyword`; loading it adds a copy as a new page.
+ * The list here names those pages, so the menu can show them without reading
+ * the note (it can't while open), and keeps the pieces' positions as
+ * fractions of the page, so "just the pieces" can go onto any page, on any
+ * device. The controller brings it in line with the note's keywords each
+ * time the menu closes.
  *
- * Layouts saved before whole pages were have no `libPage`: pieces only.
+ * Layouts saved before whole pages were have neither: pieces only. Layouts
+ * saved before keywords have a `libPage` until they're tagged.
  * Kept in AsyncStorage, so the list survives closing the plugin and
  * rebooting, but not uninstalling it (the layouts note does).
  */
@@ -27,7 +31,11 @@ export interface SavedLayout {
   /** Epoch ms. */
   savedAt: number;
   pieces: LayoutPiece[];
-  /** Its page in the layouts note; absent for pieces-only layouts. */
+  /** The keyword on its page in the layouts note, "~BOARD:<template>:<name>". */
+  keyword?: string;
+  /** The name of the template its page is on, e.g. "Soccer Field". */
+  template?: string;
+  /** Before keywords: its page's position in the layouts note. */
   libPage?: number;
   /** The PNG of its background. */
   background?: string;
@@ -35,16 +43,21 @@ export interface SavedLayout {
   marks?: number;
 }
 
-/** Where a saved page is. */
+/** A saved page, as the layouts note has it. */
 export interface LayoutPage {
-  libPage: number;
-  background: string;
+  keyword: string;
+  template: string;
+  background?: string;
   marks: number;
 }
 
+/** Whether a layout has a whole page to add, not just pieces. */
+export const hasPage = (l: SavedLayout) =>
+  l.keyword !== undefined || l.libPage !== undefined;
+
 const KEY = 'snsoccer:layouts:v1';
-/** Layouts-note pages whose layout was deleted, to remove once we can. */
-const REMOVALS_KEY = 'snsoccer:layouts:removals:v1';
+/** Keywords of layouts deleted in the menu, to remove once we can. */
+const REMOVALS_KEY = 'snsoccer:layouts:removals:v2';
 
 function valid(v: unknown): v is SavedLayout {
   const l = v as Partial<SavedLayout> | null;
@@ -54,6 +67,7 @@ function valid(v: unknown): v is SavedLayout {
     typeof l.name === 'string' &&
     typeof l.savedAt === 'number' &&
     Array.isArray(l.pieces) &&
+    (l.keyword === undefined || typeof l.keyword === 'string') &&
     (l.libPage === undefined || (Number.isInteger(l.libPage) && l.libPage >= 0))
   );
 }
@@ -131,62 +145,46 @@ export async function deleteLayout(id: string): Promise<void> {
   const all = await listLayouts();
   const gone = all.find(l => l.id === id);
   await write(all.filter(l => l.id !== id));
-  if (gone?.libPage !== undefined) {
-    await queueRemoval(gone.libPage);
+  if (gone?.keyword) {
+    await queueRemoval(gone.keyword);
   }
 }
 
-async function readRemovals(): Promise<number[]> {
+async function readRemovals(): Promise<string[]> {
   try {
     const json = await AsyncStorage.getItem(REMOVALS_KEY);
     const list = json ? (JSON.parse(json) as unknown[]) : [];
-    return list.filter(
-      (n): n is number => Number.isInteger(n) && (n as number) >= 0,
-    );
+    return list.filter((k): k is string => typeof k === 'string');
   } catch {
     return [];
   }
 }
 
-export async function queueRemoval(libPage: number): Promise<void> {
+export async function queueRemoval(keyword: string): Promise<void> {
   const list = await readRemovals();
-  if (!list.includes(libPage)) {
+  if (!list.includes(keyword)) {
     await AsyncStorage.setItem(
       REMOVALS_KEY,
-      JSON.stringify([...list, libPage]),
+      JSON.stringify([...list, keyword]),
     );
   }
 }
 
-/** Layouts-note pages waiting to be removed, highest first. */
-export async function pendingRemovals(): Promise<number[]> {
-  return (await readRemovals()).sort((a, b) => b - a);
+/** Keywords of layouts-note pages waiting to be removed. */
+export async function pendingRemovals(): Promise<string[]> {
+  return readRemovals();
 }
 
-/**
- * A page of the layouts note is gone (or was never going to be): stop
- * waiting to remove it, and if it went, move every later page up one.
- */
-export async function libraryPageGone(
-  libPage: number,
-  removed: boolean,
-): Promise<void> {
-  const shift = (n: number) => (removed && n > libPage ? n - 1 : n);
+export async function removalDone(keyword: string): Promise<void> {
   await AsyncStorage.setItem(
     REMOVALS_KEY,
-    JSON.stringify(
-      (await readRemovals()).filter(n => n !== libPage).map(shift),
-    ),
+    JSON.stringify((await readRemovals()).filter(k => k !== keyword)),
   );
-  if (removed) {
-    await write(
-      (
-        await listLayouts()
-      ).map(l =>
-        l.libPage === undefined ? l : {...l, libPage: shift(l.libPage)},
-      ),
-    );
-  }
+}
+
+/** Replace the list wholesale, as after reading the layouts note. */
+export async function replaceLayouts(list: SavedLayout[]): Promise<void> {
+  await write([...list].sort((a, b) => b.savedAt - a.savedAt));
 }
 
 /** A layout's pieces in page pixels, for a page of this size. */

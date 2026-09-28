@@ -3,16 +3,16 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   deleteLayout,
   layoutOnPage,
-  libraryPageGone,
   listLayouts,
   pendingRemovals,
-  queueRemoval,
+  removalDone,
   saveLayout,
 } from '../src/layouts/layoutStore';
 
 beforeEach(() => AsyncStorage.clear());
 
-const page = {width: 1404, height: 1872};
+const size = {width: 1404, height: 1872};
+const page = size;
 
 it('saves positions as page fractions and puts them back on any page', async () => {
   const {layout: saved} = await saveLayout(
@@ -54,27 +54,16 @@ it('lists newest first, replaces by name, and deletes', async () => {
   expect(list.map(l => l.name)).toEqual(['a']);
 });
 
-it('queues the page of a deleted layout, and renumbers when it goes', async () => {
-  const at = (libPage: number) => ({libPage, background: 'bg.png', marks: 0});
-  await saveLayout('A', [], page, 1, at(0));
-  await saveLayout('B', [], page, 2, at(1));
-  await saveLayout('C', [], page, 3, at(2));
-  const b = (await listLayouts()).find(l => l.name === 'B')!;
-  await deleteLayout(b.id);
-  expect(await pendingRemovals()).toEqual([1]);
-
-  await libraryPageGone(1, true);
+it('queues the keyword of a deleted layout', async () => {
+  const onPage = (k: string) => ({keyword: k, template: 'White', marks: 0});
+  await saveLayout('A', [], size, 1, onPage('~BOARD:White:A'));
+  await saveLayout('Pieces', [], size, 2);
+  const list = await listLayouts();
+  await deleteLayout(list.find(l => l.name === 'A')!.id);
+  await deleteLayout(list.find(l => l.name === 'Pieces')!.id);
+  expect(await pendingRemovals()).toEqual(['~BOARD:White:A']);
+  await removalDone('~BOARD:White:A');
   expect(await pendingRemovals()).toEqual([]);
-  expect((await listLayouts()).map(l => [l.name, l.libPage])).toEqual([
-    ['C', 1],
-    ['A', 0],
-  ]);
-
-  // A page that couldn't go (a note's last page) is simply forgotten.
-  await queueRemoval(0);
-  await libraryPageGone(0, false);
-  expect(await pendingRemovals()).toEqual([]);
-  expect((await listLayouts()).map(l => l.libPage)).toEqual([1, 0]);
 });
 
 it('refuses an empty name', async () => {

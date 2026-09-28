@@ -22,9 +22,10 @@ import {PluginCommAPI, PluginManager} from 'sn-plugin-lib';
 import {
   LayoutPiece,
   SavedLayout,
-  libraryPageGone,
+  listLayouts,
   pendingRemovals,
-  queueRemoval,
+  removalDone,
+  replaceLayouts,
   saveLayout,
 } from '../layouts/layoutStore';
 import {
@@ -35,7 +36,9 @@ import {
   PagePiece,
   addPitchPage,
   copyPage,
+  describeLibraryPage,
   getContext,
+  listLibrary,
   loadFromLibrary,
   movePiece,
   placePiece,
@@ -44,6 +47,7 @@ import {
   removePiece,
   replacePieces,
   saveToLibrary,
+  tagLibraryPage,
 } from '../page/pageOps';
 import {PieceKind, Point, pieceSizeFor} from '../page/pieceShapes';
 import {PaletteEvent, ScreenPoint, onPaletteEvent, palette} from './bridge';
@@ -297,20 +301,71 @@ export async function closePanelThen(
 
 /** Note work that waits for the panel to be closed, whoever closed it. */
 function afterClose(): void {
-  enqueue(removeDeletedPages, true);
+  enqueue(syncLibrary, true);
 }
 
-/** Remove the layouts-note pages of layouts deleted in the menu. */
-async function removeDeletedPages(): Promise<void> {
-  for (const libPage of await pendingRemovals()) {
-    let removed = false;
+/**
+ * Bring the saved list in line with the layouts note, the truth:
+ *  1. remove the pages of layouts deleted in the menu;
+ *  2. tag pages saved before keywords;
+ *  3. drop layouts whose page has gone from the note, and list pages tagged
+ *     "~BOARD:..." there that the list doesn't know yet.
+ */
+export async function syncLibrary(): Promise<void> {
+  for (const keyword of await pendingRemovals()) {
     try {
-      removed = await removeFromLibrary(libPage);
+      await removeFromLibrary(keyword);
+      await removalDone(keyword);
     } catch (e) {
-      log('layouts: could not remove page', libPage, e);
+      log('layouts: could not remove', keyword, e);
     }
-    await libraryPageGone(libPage, removed);
   }
+
+  let list = await listLayouts();
+  for (const l of list) {
+    if (l.keyword === undefined && l.libPage !== undefined) {
+      try {
+        l.keyword = await tagLibraryPage(l.libPage, l.name);
+        delete l.libPage;
+      } catch (e) {
+        log('layouts: could not tag', l.name, e);
+      }
+    }
+  }
+
+  const found = await listLibrary();
+  if (!found) {
+    await replaceLayouts(list);
+    return; // no layouts note, or it couldn't be read: change nothing
+  }
+  const inNote = new Set(found.map(f => f.keyword));
+  list = list.filter(l => l.keyword === undefined || inNote.has(l.keyword));
+  const listed = new Set(list.map(l => l.keyword));
+  for (const f of found) {
+    if (listed.has(f.keyword)) {
+      continue;
+    }
+    listed.add(f.keyword);
+    try {
+      const page = await describeLibraryPage(f.page);
+      list.push({
+        id: `${f.page}-${Date.now().toString(36)}`,
+        name: f.name,
+        savedAt: Date.now(),
+        keyword: f.keyword,
+        template: f.template,
+        marks: page.marks,
+        pieces: page.pieces.map(p => ({
+          kind: p.kind,
+          x: p.x / page.pageSize.width,
+          y: p.y / page.pageSize.height,
+        })),
+      });
+    } catch (e) {
+      log('layouts: could not read', f.keyword, e);
+    }
+  }
+  await replaceLayouts(list);
 }
 
 // ── Menu actions, run after the panel closes ────────────────────────────────
@@ -336,6 +391,7 @@ export async function saveThisPage(name: string): Promise<string> {
   const now = Date.now();
   const saved = await saveToLibrary(
     ctx,
+    name,
     now.toString(36) + Math.random().toString(36).slice(2, 6),
   );
   const {layout, replaced} = await saveLayout(
@@ -343,24 +399,36 @@ export async function saveThisPage(name: string): Promise<string> {
     saved.pieces,
     ctx.pageSize,
     now,
-    {libPage: saved.libPage, background: saved.background, marks: saved.marks},
+    {
+      keyword: saved.keyword,
+      template: saved.template,
+      background: saved.background,
+      marks: saved.marks,
+    },
   );
-  if (replaced?.libPage !== undefined) {
-    await queueRemoval(replaced.libPage);
-    await removeDeletedPages();
+  // Saving under a name again replaces that layout, and its page. The new
+  // page may carry the very same keyword, so it's spared by position.
+  if (replaced?.keyword) {
+    try {
+      await removeFromLibrary(replaced.keyword, saved.libPage);
+    } catch (e) {
+      log('layouts: could not remove the old page', replaced.keyword, e);
+    }
   }
   return `Saved "${layout.name}".`;
 }
 
 /** Add a saved layout's page after this one. */
 export async function loadLayoutAsPage(layout: SavedLayout): Promise<string> {
-  if (layout.libPage === undefined || !layout.background) {
+  if (!layout.keyword) {
     throw new Error(
-      `"${layout.name}" was saved before whole pages were: it has pieces only.`,
+      layout.libPage === undefined
+        ? `"${layout.name}" was saved before whole pages were: it has pieces only.`
+        : `"${layout.name}" is being updated. Close the menu, then try again.`,
     );
   }
   const ctx = await getContext();
-  const p = await loadFromLibrary(ctx, layout.libPage, layout.background);
+  const p = await loadFromLibrary(ctx, layout.keyword, layout.background);
   return `"${layout.name}" added as ${landedOn(p)}`;
 }
 

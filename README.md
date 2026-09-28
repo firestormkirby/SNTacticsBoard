@@ -29,7 +29,9 @@ button that stays out of the way while you write.
   their own "Pieces" layer; you write on the main layer, so the native lasso
   and eraser there leave them alone.
 - **The menu** (hold the button, or open **Soccer Board** from the Note
-  toolbar) has the two exports and the setup:
+  toolbar) is a popout, two thirds of the screen each way, with the note
+  still showing around it; tap outside it to close it. It has the two exports
+  and the setup:
 
   | Section | What it does |
   |---|---|
@@ -44,9 +46,16 @@ button that stays out of the way while you write.
   the message says which page it is so you can turn to it.
 
 - **Saved layouts live in a note**, `EXPORT/SNSoccer/Layouts.note`, one page
-  per layout, copied in and out the way Copy page copies. Opening it to look
-  is fine, but leave its pages in order: the list in the menu points at them
-  by position.
+  per layout, copied in and out the way Copy page copies. Each page is tagged
+  with a keyword, `~BOARD:<template>:<name>`, and found by it:
+  `~BOARD:Soccer Field:Rondo 4v2` is "Rondo 4v2" on the plugin's pitch. The
+  template part is the name of the page's background: "Soccer Field" for the
+  pitch and pages copied from it, a built-in template's name ("Dot Grid"), or a
+  custom template's file name. The `~` sorts the tags after your own keywords.
+
+  So the note can be opened, reordered and edited in the Note app. Each time
+  the menu closes, the list catches up with it: a page deleted there drops off
+  the list, and a page you tag `~BOARD:<template>:<name>` there joins it.
 
   The first time it opens, the menu draws the pitch background.
 
@@ -58,6 +67,17 @@ button that stays out of the way while you write.
   offers to ask again. Placing, moving and saving layouts don't need them. The
   floating button separately needs Android's "Display over other apps" for
   the plugin host.
+
+## Roadmap
+
+- **Your own pieces.** Replace or add to the four built-in pieces with your
+  own images or drawings: lasso something drawn on a page (or pick an image)
+  and save it as a piece, then drag it out of the palette like the others. It
+  would be kept as elements or a sticker (`saveStickerByLasso`), shown in the
+  palette as a thumbnail, and placed by copying its elements to where it's
+  dropped; its handle and tag would work as the built-in pieces' do.
+- **Turned pages.** Placing and moving on a rotated screen, once the
+  screen-to-page mapping is measured on a device.
 
 ## How it's built
 
@@ -188,7 +208,11 @@ The Kotlin was compiled against the Android framework and React Native
   `com.snsoccer.palette.SoccerPalettePackage` in `reactPackages` and the
   `.snplg` holds an `app.npk`.
 - **Saved layouts.** Save a page, check `EXPORT/SNSoccer/Layouts.note` gets a
-  page (`createNote` makes it the first time), then New page brings it back.
+  page (`createNote` makes it the first time) with its `~BOARD:…` keyword in
+  the Note app's keyword list, then New page brings it back.
+- **The popout menu.** The note should show around the menu. If the host
+  paints the plugin's window white regardless, the card still works; only the
+  see-through part is lost.
 - **File permission.** The menu's first open should show the host's
   permission dialog for file access. After "Always allow", Copy page and Add
   a pitch page should work from the background once the menu closes. Check

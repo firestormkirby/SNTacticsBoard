@@ -51,6 +51,8 @@ export interface MockPage {
   layers: MockLayer[];
   elements: MockElement[];
   nextNum: number;
+  /** Page keywords; they belong to the page, so they move with it. */
+  keywords: string[];
 }
 
 export interface MockImage {
@@ -89,6 +91,7 @@ function blankPage(template: string): MockPage {
     layers: [{ layerId: 0, name: 'Main Layer', isVisible: true, isCurrentLayer: true }],
     elements: [],
     nextNum: 1,
+    keywords: [],
   };
 }
 
@@ -195,6 +198,27 @@ export function insertPage(page: number, template: string, path?: string): void 
   pages.splice(at, 0, blankPage(template));
   if (pages === NOTE.pages && at <= NOTE.current) NOTE.current++;
   changed();
+}
+
+export function templateOf(page: number, path?: string): string {
+  return pageAt(page, path).template;
+}
+
+/** Every keyword on the listed pages, as getKeyWords reports them. */
+export function keywordsOn(pages: number[], path?: string): Array<{ keyword: string; page: number }> {
+  const all = pagesOf(path);
+  return pages.flatMap(page => (all[page]?.keywords ?? []).map(keyword => ({ keyword, page })));
+}
+
+export function addKeyword(page: number, keyword: string, path?: string): void {
+  pageAt(page, path).keywords.push(keyword);
+}
+
+export function removeKeyword(page: number, index: number, path?: string): boolean {
+  const p = pageAt(page, path);
+  if (!p.keywords[index]) return false;
+  p.keywords.splice(index, 1);
+  return true;
 }
 
 export function layersOn(page: number, path?: string): MockLayer[] {

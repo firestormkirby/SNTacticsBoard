@@ -240,15 +240,29 @@ describe('menu actions', () => {
     );
   });
 
-  it('saves a whole page and adds it back as a new page', async () => {
+  const LIB = '/storage/emulated/0/EXPORT/SNSoccer/Layouts.note';
+  const libPages = () => mockNote.state.notes.get(LIB) ?? [];
+  const tags = () => libPages().map(p => p.keywords.join(' '));
+  const closeMenu = async () => {
+    startPaletteController();
+    panelOpened();
+    await closePanelThen(async () => {});
+    await settle();
+  };
+
+  it('saves a whole page, tagged by keyword, and adds it back', async () => {
     mockNote.state.pages[0].elements.push({type: 0, numInPage: 900});
     await handle({type: 'drop', kind: 'cone', ...at(300, 500)});
     expect(await saveThisPage('Rondo')).toBe('Saved "Rondo".');
 
-    const lib = '/storage/emulated/0/EXPORT/SNSoccer/Layouts.note';
-    expect(mockNote.state.notes.get(lib)).toHaveLength(1);
+    expect(tags()).toEqual(['~BOARD:White:Rondo']);
     const [saved] = await listLayouts();
-    expect(saved).toMatchObject({name: 'Rondo', libPage: 0, marks: 1});
+    expect(saved).toMatchObject({
+      name: 'Rondo',
+      keyword: '~BOARD:White:Rondo',
+      template: 'White',
+      marks: 1,
+    });
     expect(saved.pieces).toHaveLength(1);
 
     // Clear the page, then bring the layout back as a new page.
@@ -258,40 +272,81 @@ describe('menu actions', () => {
     const copy = mockNote.state.pages[1];
     expect(copy.template).toBe(saved.background);
     expect(copy.elements.length).toBeGreaterThan(1);
+    expect(copy.keywords).toEqual([]); // the tag stays in the layouts note
     expect((await readPieces(await getContext())).map(p => p.kind)).toEqual([
       'cone',
     ]);
   });
 
-  it('keeps the layouts note in step with the list', async () => {
-    const lib = '/storage/emulated/0/EXPORT/SNSoccer/Layouts.note';
+  it('names the template: a pitch page, and copies of it, are Soccer Field', async () => {
+    mockNote.state.files.add(
+      '/storage/emulated/0/EXPORT/SNSoccer/pitch-1404x1872.png',
+    );
+    await addPitch();
+    await copyThisPage(); // page 3 is a copy of the pitch page
+    await saveThisPage('From a copy');
+    expect(tags()).toEqual(['~BOARD:Soccer Field:From a copy']);
+  });
+
+  it('finds pages by keyword, wherever they are in the note', async () => {
+    await saveThisPage('A');
+    await saveThisPage('B');
+    // Someone reorders the layouts note by hand.
+    libPages().reverse();
+    const b = (await listLayouts()).find(l => l.name === 'B')!;
+    mockNote.state.pages[0].elements = [];
+    await loadLayoutAsPage(b);
+    expect(mockNote.state.pages[1].template).toBe(b.background);
+  });
+
+  it('replaces a page saved again under the same name', async () => {
+    await saveThisPage('A');
+    await saveThisPage('B');
+    await saveThisPage('a');
+    expect(tags()).toEqual(['~BOARD:White:B', '~BOARD:White:a']);
+    expect((await listLayouts()).map(l => l.name)).toEqual(['a', 'B']);
+  });
+
+  it('keeps the list in line with the layouts note', async () => {
     await saveThisPage('A');
     await saveThisPage('B');
     await saveThisPage('C');
-    expect(mockNote.state.notes.get(lib)).toHaveLength(3);
 
-    // Saving under a name again replaces that layout's page.
-    await saveThisPage('a');
-    let list = await listLayouts();
-    expect(mockNote.state.notes.get(lib)).toHaveLength(3);
-    expect(list.map(l => [l.name, l.libPage])).toEqual([
-      ['a', 2],
-      ['C', 1],
-      ['B', 0],
-    ]);
+    // Deleted in the menu: its page goes once the menu has closed.
+    await deleteLayout((await listLayouts()).find(l => l.name === 'B')!.id);
+    await closeMenu();
+    expect(tags()).toEqual(['~BOARD:White:A', '~BOARD:White:C']);
 
-    // Deleting in the menu queues the page; it goes once the menu closes.
-    await deleteLayout(list.find(l => l.name === 'B')!.id);
-    startPaletteController();
-    panelOpened();
-    await closePanelThen(async () => {});
-    await settle();
-    list = await listLayouts();
-    expect(mockNote.state.notes.get(lib)).toHaveLength(2);
-    expect(list.map(l => [l.name, l.libPage])).toEqual([
-      ['a', 1],
-      ['C', 0],
+    // Deleted in the Note app, and one tagged there by hand.
+    libPages().splice(0, 1);
+    libPages()[0].keywords.push('~BOARD:Kanban:Warm-up');
+    await closeMenu();
+    expect((await listLayouts()).map(l => [l.name, l.template])).toEqual([
+      ['Warm-up', 'Kanban'],
+      ['C', 'White'],
     ]);
+  });
+
+  it("leaves the last page, untagged, when it can't be removed", async () => {
+    await saveThisPage('Only');
+    await deleteLayout((await listLayouts())[0].id);
+    await closeMenu();
+    expect(libPages()).toHaveLength(1);
+    expect(tags()).toEqual(['']);
+    expect(await listLayouts()).toEqual([]);
+  });
+
+  it('tags pages saved before keywords', async () => {
+    await saveThisPage('Old');
+    const [old] = await listLayouts();
+    libPages()[0].keywords = [];
+    await AsyncStorage.setItem(
+      'snsoccer:layouts:v1',
+      JSON.stringify([{...old, keyword: undefined, libPage: 0}]),
+    );
+    await closeMenu();
+    expect(tags()).toEqual(['~BOARD:White:Old']);
+    expect((await listLayouts())[0].keyword).toBe('~BOARD:White:Old');
   });
 
   it('loads a layout in place of the pieces on the page', async () => {

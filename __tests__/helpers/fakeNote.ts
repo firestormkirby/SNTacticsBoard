@@ -10,6 +10,8 @@ interface Page {
   layers: Array<{layerId: number; name: string}>;
   elements: Element[];
   nextNum: number;
+  /** Keywords belong to a page, so they move with it. */
+  keywords: string[];
 }
 
 const ok = (result?: unknown) => Promise.resolve({success: true, result});
@@ -42,6 +44,7 @@ export function createFakeNote(
     layers: [{layerId: 0, name: 'Main Layer'}],
     elements: [],
     nextNum: 1,
+    keywords: [],
   });
   state.pages.push(newPage('style_white'));
 
@@ -138,6 +141,33 @@ export function createFakeNote(
         state.notes.set(path, [newPage(template)]);
         state.files.add(path);
         return ok(true);
+      },
+      getKeyWords: (path: string, pageList: number[]) =>
+        ok(
+          pageList.flatMap(page =>
+            (pagesOf(path)[page]?.keywords ?? []).map(keyword => ({
+              keyword,
+              page,
+            })),
+          ),
+        ),
+      insertKeyWord: (path: string, page: number, keyword: string) => {
+        track('insertKeyWord');
+        pagesOf(path)[page].keywords.push(keyword);
+        return ok(true);
+      },
+      deleteKeyWord: (path: string, page: number, index: number) => {
+        track('deleteKeyWord');
+        pagesOf(path)[page].keywords.splice(index, 1);
+        return ok(true);
+      },
+      getNotePageTemplate: (path: string, page: number) => {
+        const t = pagesOf(path)[page].template;
+        return ok(
+          t.includes('/')
+            ? {name: t.split('/').pop(), path: t}
+            : {name: t, path: ''},
+        );
       },
       generateNoteTemplatePng: (path: string, page: number, png: string) => {
         state.files.add(png);

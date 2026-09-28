@@ -26,6 +26,7 @@ import type { SdkConfig } from '../config';
 import {
   NOTE, addElements, addLayer, copyImage, createNoteFile, elementsOn, goToPage, hasImage,
   insertPage, layersOn, noteExists, pageCount, removeElements, removePage, snapshotTemplate,
+  addKeyword, keywordsOn, removeKeyword, templateOf,
 } from './note';
 
 const ok = <T,>(result?: T) => Promise.resolve({ success: true, result });
@@ -126,7 +127,17 @@ const defaults: Record<string, Record<string, (...args: any[]) => any>> = {
   PluginFileAPI: {
     getNoteTotalPageNum: (path?: string) => ok(pageCount(path)),
     getPageSize: () => ok(CURRENT_PAGE.pageSize),
-    getKeyWords: () => ok([]),
+    getKeyWords: (path: string, pages: number[]) => ok(keywordsOn(pages ?? [], path)),
+    insertKeyWord: (path: string, page: number, keyword: string) => {
+      addKeyword(page, keyword, path);
+      return ok(true);
+    },
+    deleteKeyWord: (path: string, page: number, index: number) =>
+      ok(removeKeyword(page, index, path)),
+    getNotePageTemplate: (path: string, page: number) => {
+      const t = templateOf(page, path);
+      return ok(t.includes('/') ? { name: t.split('/').pop(), path: t } : { name: t, path: '' });
+    },
     getElements: (page: number, path?: string) => ok(elementsOn(page, path)),
     getElementNumList: () => ok([]),
     getTitles: () => ok([]),
@@ -158,7 +169,6 @@ const defaults: Record<string, Record<string, (...args: any[]) => any>> = {
     openFile: () => ok(),
   },
   PluginNoteAPI: {
-    getNotePageTemplate: () => ok(CURRENT_PAGE.template),
     saveCurrentNote: () => ok(),
     insertText: () => ok(),
     insertImage: () => ok(),

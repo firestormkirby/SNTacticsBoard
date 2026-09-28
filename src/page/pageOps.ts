@@ -482,6 +482,64 @@ export async function addPitchPage(ctx: PageContext): Promise<NewPage> {
   return {page, jumped: await tryJumpToPage(page)};
 }
 
+// ── Template names ──────────────────────────────────────────────────────────
+//
+// Saved pages are tagged with the name of the template they're on, "Soccer
+// Field" for the plugin's pitch. A copied page's template is a PNG rendered
+// from its source, which says nothing about where it came from, so every PNG
+// the plugin renders is recorded with its source's name, and a copy of a
+// copy of a pitch page is still "Soccer Field".
+
+const TEMPLATE_NAMES_KEY = 'snsoccer:templates:v1';
+export const PITCH_TEMPLATE_NAME = 'Soccer Field';
+
+async function templateNames(): Promise<Record<string, string>> {
+  try {
+    const json = await AsyncStorage.getItem(TEMPLATE_NAMES_KEY);
+    return json ? (JSON.parse(json) as Record<string, string>) : {};
+  } catch {
+    return {};
+  }
+}
+
+async function nameTemplate(png: string, name: string): Promise<void> {
+  const names = await templateNames();
+  names[png] = name;
+  await AsyncStorage.setItem(TEMPLATE_NAMES_KEY, JSON.stringify(names));
+}
+
+/** "style_dot_grid" -> "Dot Grid"; "/MyStyle/Kanban.png" -> "Kanban". */
+function readableTemplate(nameOrPath: string): string {
+  const base = nameOrPath
+    .split('/')
+    .pop()!
+    .replace(/\.[a-z0-9]+$/i, '');
+  const words = base
+    .replace(/^style_/i, '')
+    .replace(/[_-]+/g, ' ')
+    .trim();
+  return words ? words.replace(/\b[a-z]/g, c => c.toUpperCase()) : 'Page';
+}
+
+/** What a page's template is called, for its keyword. */
+export async function templateNameOf(src: PageContext): Promise<string> {
+  let template: {name?: string; path?: string} | null = null;
+  try {
+    template = answer(
+      await PluginFileAPI.getNotePageTemplate(src.notePath, src.page),
+      'getNotePageTemplate',
+    );
+  } catch (e) {
+    console.warn('[snsoccer] template name unavailable', e);
+  }
+  const path = template?.path ?? '';
+  if (/\/pitch-\d+x\d+\.png$/.test(path)) {
+    return PITCH_TEMPLATE_NAME;
+  }
+  const known = path ? (await templateNames())[path] : undefined;
+  return known ?? readableTemplate(template?.name || path || '');
+}
+
 /** The background of a page, rendered to a PNG that a new page can use. */
 async function backgroundOf(src: PageContext, name: string): Promise<string> {
   const png = `${await exportDir()}/${name}.png`;
@@ -489,6 +547,7 @@ async function backgroundOf(src: PageContext, name: string): Promise<string> {
     await PluginFileAPI.generateNoteTemplatePng(src.notePath, src.page, png),
     'generateNoteTemplatePng',
   );
+  await nameTemplate(png, await templateNameOf(src));
   return png;
 }
 
@@ -576,13 +635,90 @@ export async function copyPage(ctx: PageContext): Promise<NewPage> {
 // A saved layout is a whole page: background, drawing and pieces. Each is a
 // page of one note the plugin keeps, EXPORT/SNSoccer/Layouts.note, copied in
 // and out the way Copy page copies within a note (Modulanner copies ink
-// between notes the same way). Its pages line up with the saved list, so
-// it is best left to the plugin; opening it to look is fine.
+// between notes the same way).
+//
+// Each page carries a keyword, "~BOARD:<template>:<name>", and is found by
+// it, never by position, so the note can be reordered, and pages deleted or
+// tagged by hand in the Note app. The "~" sorts the tags after the user's own
+// keywords, as Modulanner's "~PLANNER" ones do. The keyword is the truth; the
+// list in AsyncStorage (layoutStore.ts) is what the menu can read while open,
+// brought back in line with the note whenever the menu closes.
 
 export const LIBRARY_NAME = 'Layouts.note';
+export const KEYWORD_PREFIX = '~BOARD:';
 
 export async function libraryPath(): Promise<string> {
   return `${await exportDir()}/${LIBRARY_NAME}`;
+}
+
+/** Keyword fields can't hold ':' (the separator), and are kept short. */
+const field = (text: string, max: number) =>
+  text.replace(/:/g, '-').replace(/\s+/g, ' ').trim().slice(0, max).trim() ||
+  'Untitled';
+
+export function layoutKeyword(template: string, name: string): string {
+  return `${KEYWORD_PREFIX}${field(template, 24)}:${field(name, 40)}`;
+}
+
+/** A layout keyword's parts, or null for anyone else's keyword. */
+export function parseLayoutKeyword(
+  keyword: string,
+): {template: string; name: string} | null {
+  if (!keyword.startsWith(KEYWORD_PREFIX)) {
+    return null;
+  }
+  const rest = keyword.slice(KEYWORD_PREFIX.length);
+  const at = rest.indexOf(':');
+  return at > 0 && at < rest.length - 1
+    ? {template: rest.slice(0, at), name: rest.slice(at + 1)}
+    : null;
+}
+
+/** A layout page found in the layouts note. */
+export interface LibraryEntry {
+  keyword: string;
+  page: number;
+  /** Its position among the keywords on its page, for deleteKeyWord. */
+  index: number;
+  template: string;
+  name: string;
+}
+
+/**
+ * Every layout page in the layouts note, by keyword. Null when there is no
+ * layouts note, or the note couldn't be read (not the same as "none").
+ */
+export async function listLibrary(): Promise<LibraryEntry[] | null> {
+  const lib = await libraryPath();
+  if (!(await FileUtils.exists(lib))) {
+    return null;
+  }
+  try {
+    const total = answer<number>(
+      await PluginFileAPI.getNoteTotalPageNum(lib),
+      'getNoteTotalPageNum',
+    );
+    const pages = Array.from({length: total}, (_, i) => i);
+    const all =
+      answer<Array<{keyword: string; page: number}> | null>(
+        await PluginFileAPI.getKeyWords(lib, pages),
+        'getKeyWords',
+      ) ?? [];
+    const perPage = new Map<number, number>();
+    const found: LibraryEntry[] = [];
+    for (const k of all) {
+      const index = perPage.get(k.page) ?? 0;
+      perPage.set(k.page, index + 1);
+      const parts = parseLayoutKeyword(k.keyword ?? '');
+      if (parts) {
+        found.push({keyword: k.keyword, page: k.page, index, ...parts});
+      }
+    }
+    return found;
+  } catch (e) {
+    console.warn('[snsoccer] could not read the layouts note', e);
+    return null;
+  }
 }
 
 async function libraryPage(page: number): Promise<PageContext> {
@@ -594,9 +730,25 @@ async function libraryPage(page: number): Promise<PageContext> {
   return {notePath, page, pageSize};
 }
 
+/** The page carrying a keyword, other than `except`. */
+async function findInLibrary(
+  keyword: string,
+  except?: number,
+): Promise<LibraryEntry | null> {
+  return (
+    (await listLibrary())?.find(
+      e => e.keyword === keyword && e.page !== except,
+    ) ?? null
+  );
+}
+
+export class LayoutMissingError extends Error {}
+
 /** What saving a page to the layouts note made. */
 export interface SavedPage {
-  /** Its page in the layouts note. */
+  keyword: string;
+  template: string;
+  /** Its page in the layouts note, as it was when saved. */
   libPage: number;
   /** Its background, to give a page it's loaded onto. */
   background: string;
@@ -605,13 +757,19 @@ export interface SavedPage {
   marks: number;
 }
 
-/** Save this page, all of it, as a new page at the end of the layouts note. */
+/**
+ * Save this page, all of it, as a new page at the end of the layouts note,
+ * tagged with its keyword.
+ */
 export async function saveToLibrary(
   ctx: PageContext,
-  id: string,
+  name: string,
+  fileId: string,
 ): Promise<SavedPage> {
   check(await PluginNoteAPI.saveCurrentNote(), 'saveCurrentNote');
-  const background = await backgroundOf(ctx, `layout-${id}`);
+  const template = await templateNameOf(ctx);
+  const keyword = layoutKeyword(template, name);
+  const background = await backgroundOf(ctx, `layout-${fileId}`);
   const lib = await libraryPath();
 
   let libPage: number;
@@ -642,8 +800,14 @@ export async function saveToLibrary(
     libPage = 0;
   }
   const {pieces, count} = await copyContents(ctx, lib, libPage);
+  check(
+    await PluginFileAPI.insertKeyWord(lib, libPage, keyword),
+    'insertKeyWord',
+  );
   const pieceNums = pieces.reduce((n, p) => n + p.nums.length, 0);
   return {
+    keyword,
+    template,
     libPage,
     background,
     pieces: pieces.map(({kind, id: pid, x, y}) => ({kind, id: pid, x, y})),
@@ -651,38 +815,93 @@ export async function saveToLibrary(
   };
 }
 
-/** Add a saved page after this one, and go to it. */
+/** A saved page's pieces and how much drawing it has, for the list. */
+export async function describeLibraryPage(page: number): Promise<{
+  pieces: PieceTag[];
+  marks: number;
+  pageSize: PageContext['pageSize'];
+}> {
+  const src = await libraryPage(page);
+  const pieces = await readPieces(src);
+  const all = answer<RawElement[]>(
+    await PluginFileAPI.getElements(page, src.notePath),
+    'getElements',
+  );
+  for (const el of all) {
+    el.recycle?.();
+  }
+  const pieceNums = pieces.reduce((n, p) => n + p.nums.length, 0);
+  return {
+    pieces: pieces.map(({kind, id, x, y}) => ({kind, id, x, y})),
+    marks: Math.max(0, all.length - pieceNums),
+    pageSize: src.pageSize,
+  };
+}
+
+/** Add the saved page with this keyword after this one, and go to it. */
 export async function loadFromLibrary(
   ctx: PageContext,
-  libPage: number,
-  background: string,
+  keyword: string,
+  background?: string,
 ): Promise<NewPage> {
+  const entry = await findInLibrary(keyword);
+  if (!entry) {
+    throw new LayoutMissingError(
+      `Couldn't find its page in ${LIBRARY_NAME}. Was it deleted there?`,
+    );
+  }
   check(await PluginNoteAPI.saveCurrentNote(), 'saveCurrentNote');
-  const src = await libraryPage(libPage);
+  const src = await libraryPage(entry.page);
   const page = await nextPageIndex(ctx);
-  const bg = (await FileUtils.exists(background))
-    ? background
-    : await backgroundOf(src, `layout-${timestamp()}`);
+  const bg =
+    background && (await FileUtils.exists(background))
+      ? background
+      : await backgroundOf(src, `layout-${timestamp()}`);
   await copyPageTo(src, ctx.notePath, page, bg);
   return {page, jumped: await tryJumpToPage(page)};
 }
 
+/** Tag a page of the layouts note, as for a layout saved before keywords. */
+export async function tagLibraryPage(
+  libPage: number,
+  name: string,
+): Promise<string> {
+  const src = await libraryPage(libPage);
+  const keyword = layoutKeyword(await templateNameOf(src), name);
+  check(
+    await PluginFileAPI.insertKeyWord(src.notePath, libPage, keyword),
+    'insertKeyWord',
+  );
+  return keyword;
+}
+
 /**
- * Take a page out of the layouts note. A note keeps at least one page, so
- * the last one stays; it's simply no longer listed.
+ * Take the page with this keyword out of the layouts note (other than
+ * `except`, a page just saved under the same keyword). A note keeps at least
+ * one page, so the last one stays, untagged: no longer a layout.
  */
-export async function removeFromLibrary(libPage: number): Promise<boolean> {
-  const lib = await libraryPath();
-  if (!(await FileUtils.exists(lib))) {
-    return false;
+export async function removeFromLibrary(
+  keyword: string,
+  except?: number,
+): Promise<void> {
+  const entry = await findInLibrary(keyword, except);
+  if (!entry) {
+    return; // already gone
   }
+  const lib = await libraryPath();
   const total = answer<number>(
     await PluginFileAPI.getNoteTotalPageNum(lib),
     'getNoteTotalPageNum',
   );
-  if (total <= 1 || libPage >= total) {
-    return false;
+  if (total > 1) {
+    check(
+      await PluginFileAPI.removeNotePage(lib, entry.page),
+      'removeNotePage',
+    );
+  } else {
+    check(
+      await PluginFileAPI.deleteKeyWord(lib, entry.page, entry.index),
+      'deleteKeyWord',
+    );
   }
-  check(await PluginFileAPI.removeNotePage(lib, libPage), 'removeNotePage');
-  return true;
 }
