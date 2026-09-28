@@ -752,7 +752,7 @@ function Build-AndroidApk {
             }
             
             # Execute gradle build
-            $process = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', 'gradlew.bat', 'buildCustomApkDebug' -Wait -PassThru -NoNewWindow
+            $process = Start-Process -FilePath $gradlewPath -ArgumentList 'buildCustomApkDebug' -Wait -PassThru -NoNewWindow -WorkingDirectory $androidDir
             $buildResult = $process.ExitCode
         }
         elseif (Get-Command 'gradle' -ErrorAction SilentlyContinue) {

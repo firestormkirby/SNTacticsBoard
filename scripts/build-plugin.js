@@ -26,7 +26,9 @@ function run(cmd, args, cwd) {
 }
 
 run(
-  windows ? 'gradlew.bat' : './gradlew',
+  // Relative path on Windows: cmd.exe does not always search the working
+  // directory (NoDefaultCurrentDirectoryInExePath), so a bare name fails.
+  windows ? '.\\gradlew.bat' : './gradlew',
   [':app:generateAutolinkingPackageList'],
   path.join(root, 'android'),
 );
