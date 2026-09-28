@@ -1,6 +1,7 @@
 /**
  * The page that gets exported: the pitch and every placed piece, laid out on a
- * full, screen-sized sheet of white.
+ * full, screen-sized sheet of white. It is the same way round as the screen,
+ * so a drill exported in landscape comes out as a landscape page.
  *
  * It is rendered from the same components as the board, but at page size,
  * rather than photographing the on-screen pitch and scaling it up: the lines
@@ -14,7 +15,7 @@ import React, {forwardRef} from 'react';
 import {StyleSheet, View} from 'react-native';
 
 import type {BoardState} from '../board/boardState';
-import {fitPitch, fromFieldFraction} from '../board/geometry';
+import {fitPitch, fromFieldFraction, pitchBreadth} from '../board/geometry';
 import {PIECES_BY_ID} from '../board/pieces';
 import FieldMarkings from './FieldMarkings';
 import PieceGlyph from './PieceGlyph';
@@ -24,7 +25,7 @@ interface Props {
   width: number;
   height: number;
   board: BoardState;
-  /** On-screen glyph size over on-screen pitch width. */
+  /** On-screen glyph size over the on-screen pitch's breadth. */
   glyphShare: number;
   /** Called once the sheet has been laid out and can be captured. */
   onLayout: () => void;
@@ -44,7 +45,7 @@ const ExportSheet = forwardRef<View, Props>(function ExportSheet(
     w: width - 2 * inset,
     h: height - 2 * inset,
   });
-  const glyph = Math.round(field.w * glyphShare);
+  const glyph = Math.round(pitchBreadth(field) * glyphShare);
 
   return (
     // collapsable={false}: Android may otherwise flatten this View away, and
@@ -56,7 +57,11 @@ const ExportSheet = forwardRef<View, Props>(function ExportSheet(
       style={[styles.sheet, {width, height}]}
       pointerEvents="none">
       <View style={[styles.abs, {left: field.x, top: field.y}]}>
-        <FieldMarkings width={field.w} height={field.h} />
+        <FieldMarkings
+          width={field.w}
+          height={field.h}
+          landscape={field.landscape}
+        />
       </View>
       {board.placed.map(p => {
         const def = PIECES_BY_ID.get(p.id);

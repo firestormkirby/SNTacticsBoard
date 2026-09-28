@@ -1,7 +1,7 @@
 # SNSoccer: Soccer Board for Supernote
 
 A coach's whiteboard plugin for Supernote. Drag players, cones and balls onto a
-portrait pitch, then **Export to Note** to add the drill to the open notebook
+pitch, then **Export to Note** to add the drill to the open notebook
 as a new page. The diagram becomes that page's background, so you can draw
 runs and passes over it with the pen.
 
@@ -9,9 +9,12 @@ runs and passes over it with the pen.
 
 ## Features
 
-- **Portrait pitch, like a clipboard.** Goals are at the top and the bottom,
-  with regulation markings drawn in proportion. When the device is turned
-  sideways, the plugin shows a "Portrait only" notice and keeps the drill.
+- **The pitch runs along the screen's long side**, with regulation markings
+  drawn in proportion. Held upright, the goals are at the top and bottom. Turn
+  the Supernote sideways and the goals move to the left and right, with the
+  drill turned along with the pitch: the top goal becomes the left one, as if
+  you had turned a clipboard. A drill looks the same whichever way round you
+  build it.
 - **Pieces are told apart by shape, not colour**, for a greyscale screen:
   **X** for Team X, **O** for Team O, solid **▲** cones and solid **●**
   balls. Each piece has a white halo, so it stays visible on a pitch line.
@@ -94,6 +97,7 @@ npm run preview               # http://localhost:5178
 
 The scenarios are *First run*, *Rondo drill*, *Full match shape*, *Export from
 a PDF*, *Template path refused* (exercises the fallback) and *Damaged save*.
+The device list has each screen upright and in landscape.
 You can drag pieces with the mouse. When you press **Export to Note**, the
 **Last capture** card shows the page that would be added, and the browser
 console lists every SDK call in order.
@@ -131,3 +135,6 @@ These depend on host behaviour that can't be exercised off-device:
 - Whether `Dimensions.get('screen')` times the pixel ratio equals the note
   page size. The export sheet is sized from it, so a mismatch would show up as
   a stretched diagram.
+- Exporting in landscape. The page is captured the way the screen is turned,
+  1872 × 1404 or 2560 × 1920. Check how the note shows that page, and whether
+  the host takes a landscape image as a template.

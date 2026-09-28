@@ -5,6 +5,12 @@
  * pitch, then scaled to whatever rectangle the pitch is drawn into. Pieces are
  * stored as fractions of that rectangle, so the same drill lands in the same
  * place on a Nomad, a Manta, and the full-page export.
+ *
+ * The pitch always runs along the screen's long side: goals at the top and
+ * bottom in portrait, at the left and right in landscape. Stored fractions are
+ * always in portrait terms (x across the pitch, y from the top goal), and a
+ * landscape pitch is the portrait one turned a quarter-turn anticlockwise, as
+ * if the whole clipboard had been turned: the top goal ends up on the left.
  */
 import {PIECES, TRAY_SECTIONS} from './pieces';
 
@@ -44,14 +50,35 @@ export const CANVAS_METRES = {
   h: PITCH.length + 2 * PITCH.margin,
 };
 
-/** Width over height. Portrait: goals at the top and the bottom. */
+/** Width over height of the portrait pitch, goals at the top and bottom. */
 export const PITCH_ASPECT = CANVAS_METRES.w / CANVAS_METRES.h;
 
-/** Largest pitch-shaped rectangle that fits in `box`, centred. */
-export function fitPitch(box: Rect): Rect {
-  const h = Math.min(box.h, box.w / PITCH_ASPECT);
-  const w = h * PITCH_ASPECT;
-  return {x: box.x + (box.w - w) / 2, y: box.y + (box.h - h) / 2, w, h};
+/** Where the pitch is drawn, and which way round. */
+export interface FieldRect extends Rect {
+  /** Goals at the left and right instead of the top and bottom. */
+  landscape: boolean;
+}
+
+/**
+ * Largest pitch-shaped rectangle that fits in `box`, centred. The pitch runs
+ * along the box's long side unless `landscape` says otherwise.
+ */
+export function fitPitch(box: Rect, landscape = box.w > box.h): FieldRect {
+  const aspect = landscape ? 1 / PITCH_ASPECT : PITCH_ASPECT;
+  const h = Math.min(box.h, box.w / aspect);
+  const w = h * aspect;
+  return {
+    x: box.x + (box.w - w) / 2,
+    y: box.y + (box.h - h) / 2,
+    w,
+    h,
+    landscape,
+  };
+}
+
+/** Width of the pitch across the touchlines, whichever way it is drawn. */
+export function pitchBreadth(field: FieldRect): number {
+  return field.landscape ? field.h : field.w;
 }
 
 // ── Board layout, in dp ─────────────────────────────────────────────────────
@@ -82,7 +109,7 @@ export interface BoardLayout {
   width: number;
   height: number;
   /** The pitch canvas, in board coordinates. */
-  field: Rect;
+  field: FieldRect;
   /** The holding area pieces start in and return to. */
   tray: Rect;
   trayHeaders: TrayHeader[];
@@ -101,8 +128,9 @@ function clamp(v: number, lo: number, hi: number): number {
 }
 
 /**
- * Lay out the board: the pitch on the left, as tall as the screen allows, and
- * a three-column tray beside it holding every piece not on the pitch.
+ * Lay out the board: the pitch on the left, as large as the screen allows,
+ * and a three-column tray beside it holding every piece not on the pitch. The
+ * pitch turns with the screen so it always runs along the long side.
  *
  * `width` and `height` are the board area below the toolbar, in dp.
  */
@@ -117,12 +145,15 @@ export function computeLayout(width: number, height: number): BoardLayout {
   const glyph = Math.round(hit * GLYPH_SHARE);
 
   const trayW = TRAY_COLS * hit + 2 * TRAY_PAD;
-  const field = fitPitch({
-    x: PAD,
-    y: PAD,
-    w: Math.max(0, width - 2 * PAD - GAP - trayW),
-    h: innerH,
-  });
+  const field = fitPitch(
+    {
+      x: PAD,
+      y: PAD,
+      w: Math.max(0, width - 2 * PAD - GAP - trayW),
+      h: innerH,
+    },
+    width > height,
+  );
 
   // Keep pitch and tray together, centred across the screen.
   const groupW = field.w + GAP + trayW;
@@ -161,17 +192,22 @@ export function computeLayout(width: number, height: number): BoardLayout {
   };
 }
 
-/** Board point -> fraction of the pitch canvas, clamped onto it. */
-export function toFieldFraction(p: Point, field: Rect): Point {
-  return {
-    x: clamp((p.x - field.x) / field.w, 0, 1),
-    y: clamp((p.y - field.y) / field.h, 0, 1),
-  };
+/**
+ * Board point -> fraction of the portrait pitch canvas, clamped onto it.
+ * On a landscape pitch, left-to-right runs from the top goal to the bottom
+ * one, and bottom-to-top runs across the pitch from its left touchline.
+ */
+export function toFieldFraction(p: Point, field: FieldRect): Point {
+  const u = clamp((p.x - field.x) / field.w, 0, 1);
+  const v = clamp((p.y - field.y) / field.h, 0, 1);
+  return field.landscape ? {x: 1 - v, y: u} : {x: u, y: v};
 }
 
-/** Fraction of the pitch canvas -> board point. */
-export function fromFieldFraction(f: Point, field: Rect): Point {
-  return {x: field.x + f.x * field.w, y: field.y + f.y * field.h};
+/** Fraction of the portrait pitch canvas -> board point. */
+export function fromFieldFraction(f: Point, field: FieldRect): Point {
+  const u = field.landscape ? f.y : f.x;
+  const v = field.landscape ? 1 - f.x : f.y;
+  return {x: field.x + u * field.w, y: field.y + v * field.h};
 }
 
 export function isInside(p: Point, r: Rect): boolean {

@@ -1,7 +1,8 @@
 /**
  * Soccer Board: a coach's whiteboard for Supernote.
  *
- * Drag X and O players, cones and balls from the tray onto a portrait pitch.
+ * Drag X and O players, cones and balls from the tray onto the pitch, which
+ * runs along the screen's long side in portrait and in landscape.
  * The board saves itself after every move. "Export to Note" adds the drill to
  * the open note as a new page with the diagram as its background, ready to
  * draw runs and passes over with the pen.
@@ -30,6 +31,7 @@ import {
   Point,
   TOOLBAR_HEIGHT,
   computeLayout,
+  pitchBreadth,
 } from './src/board/geometry';
 import {PIECES} from './src/board/pieces';
 import {loadBoard, saveBoard} from './src/board/storage';
@@ -60,10 +62,11 @@ const nextFrames = () =>
   );
 
 export default function App(): React.JSX.Element {
-  const [rootSize, setRootSize] = useState<Size | null>(null);
   const [boardSize, setBoardSize] = useState<Size | null>(null);
   const [board, setBoard] = useState<BoardState | null>(null);
-  const [exporting, setExporting] = useState(false);
+  /** Size of the page being exported, in dp; null when not exporting. */
+  const [sheetSize, setSheetSize] = useState<Size | null>(null);
+  const exporting = sheetSize !== null;
   const [notice, setNotice] = useState<string | null>(null);
 
   const layout = useMemo(
@@ -121,44 +124,38 @@ export default function App(): React.JSX.Element {
   }, [commit]);
 
   const startExport = useCallback(() => {
-    if (exporting) {
+    if (exporting || !layout) {
       return;
     }
     setNotice(null);
     captureStarted.current = false;
-    setExporting(true);
-  }, [exporting]);
-
-  // The page is drawn at the screen's full size: the note page has the same
-  // shape, so the capture maps onto it pixel for pixel.
-  const sheetSize = useMemo(() => {
+    // The page is drawn at the screen's full size: the note page has the same
+    // shape, so the capture maps onto it pixel for pixel. It is turned to match
+    // the board, in case the reported screen size lags a rotation.
     const screen = Dimensions.get('screen');
-    return {w: screen.width, h: screen.height};
-  }, []);
+    const long = Math.max(screen.width, screen.height);
+    const short = Math.min(screen.width, screen.height);
+    setSheetSize(
+      layout.field.landscape ? {w: long, h: short} : {w: short, h: long},
+    );
+  }, [exporting, layout]);
 
   const onSheetLayout = useCallback(async () => {
-    if (captureStarted.current || !sheetRef.current) {
+    if (captureStarted.current || !sheetRef.current || !sheetSize) {
       return;
     }
     captureStarted.current = true;
     try {
       await nextFrames();
       const png = await capturePage(sheetRef.current, sheetSize.w, sheetSize.h);
-      setExporting(false);
+      setSheetSize(null);
       await exportPngToNote(png);
     } catch (e) {
       console.error('[snsoccer] capture failed', e);
-      setExporting(false);
+      setSheetSize(null);
       setNotice('Could not capture the board. Please try again.');
     }
   }, [sheetSize]);
-
-  const onRootLayout = (e: LayoutChangeEvent) => {
-    const next = sizeOf(e);
-    if (!sameSize(rootSize, next)) {
-      setRootSize(next);
-    }
-  };
   const onBoardLayout = (e: LayoutChangeEvent) => {
     const next = sizeOf(e);
     if (!sameSize(boardSize, next)) {
@@ -166,20 +163,18 @@ export default function App(): React.JSX.Element {
     }
   };
 
-  const landscape = !!rootSize && rootSize.w > rootSize.h;
-
   return (
-    <View style={styles.root} onLayout={onRootLayout}>
+    <View style={styles.root}>
       <StatusBar barStyle="dark-content" backgroundColor={PAPER} />
 
       {/* Drawn underneath the board, so capturing it never flashes the screen. */}
-      {exporting && board && layout && (
+      {sheetSize && board && layout && (
         <ExportSheet
           ref={sheetRef}
           width={sheetSize.w}
           height={sheetSize.h}
           board={board}
-          glyphShare={layout.glyph / layout.field.w}
+          glyphShare={layout.glyph / pitchBreadth(layout.field)}
           onLayout={onSheetLayout}
         />
       )}
@@ -188,18 +183,15 @@ export default function App(): React.JSX.Element {
         <Toolbar
           notice={exporting ? 'Exporting…' : notice}
           busy={exporting}
-          disabled={landscape || !board}
+          disabled={!board}
           onClear={clearBoard}
           onExport={startExport}
           onClose={() => PluginManager.closePluginView()}
         />
 
         <View style={styles.board} onLayout={onBoardLayout}>
-          {landscape ? (
-            <PortraitOnly />
-          ) : (
-            layout &&
-            board && <Board layout={layout} board={board} onDrop={handleDrop} />
+          {layout && board && (
+            <Board layout={layout} board={board} onDrop={handleDrop} />
           )}
         </View>
       </View>
@@ -231,7 +223,11 @@ function Board({
   return (
     <>
       <View style={[styles.abs, {left: field.x, top: field.y}]}>
-        <FieldMarkings width={field.w} height={field.h} />
+        <FieldMarkings
+          width={field.w}
+          height={field.h}
+          landscape={field.landscape}
+        />
       </View>
 
       <View
@@ -280,18 +276,6 @@ function Board({
         />
       ))}
     </>
-  );
-}
-
-function PortraitOnly() {
-  return (
-    <View style={styles.portraitOnly}>
-      <Text style={styles.portraitTitle}>Portrait only</Text>
-      <Text style={styles.portraitBody}>
-        The board works like a clipboard, with a goal at the top and the bottom.
-        Turn your Supernote upright to keep planning. Your drill is saved.
-      </Text>
-    </View>
   );
 }
 
@@ -438,24 +422,4 @@ const styles = StyleSheet.create({
   },
   trayHeader: {fontSize: 16, fontWeight: 'bold', color: INK},
   hint: {fontSize: 15, lineHeight: 21, color: DIM},
-
-  portraitOnly: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 40,
-  },
-  portraitTitle: {
-    fontSize: 30,
-    fontWeight: 'bold',
-    color: INK,
-    marginBottom: 12,
-  },
-  portraitBody: {
-    fontSize: 19,
-    lineHeight: 27,
-    color: INK,
-    textAlign: 'center',
-    maxWidth: 560,
-  },
 });

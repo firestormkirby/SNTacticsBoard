@@ -1,6 +1,11 @@
 /**
- * A portrait football pitch drawn from plain Views: black lines on white, goals
- * at the top and the bottom.
+ * A football pitch drawn from plain Views: black lines on white. Goals are at
+ * the top and bottom, or with `landscape`, at the left and right.
+ *
+ * Every marking is laid out in portrait metres and then placed through
+ * `place()`, which applies the quarter-turn for landscape. Boxes stay boxes and
+ * circles stay circles, so nothing is drawn with a rotate transform, which
+ * keeps lines crisp on e-ink and in the exported image.
  *
  * No SVG library, on purpose. Every native module a plugin adds has to be
  * compiled into its package, and borders plus `overflow: hidden` clipping are
@@ -15,47 +20,77 @@ import {INK, NET, PAPER} from './palette';
 interface Props {
   width: number;
   height: number;
+  /** Goals at the left and right. The top goal goes to the left. */
+  landscape?: boolean;
 }
 
 type End = 'top' | 'bottom';
 
-export default function FieldMarkings({width, height}: Props) {
-  const s = width / CANVAS_METRES.w; // dp per metre
+interface Placed {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+export default function FieldMarkings({
+  width,
+  height,
+  landscape = false,
+}: Props) {
+  // dp per metre: the canvas's long side is always the pitch's length.
+  const s = width / (landscape ? CANVAS_METRES.h : CANVAS_METRES.w);
   const line = Math.max(3, Math.round(s * 0.3));
   const m = PITCH.margin;
   const cx = CANVAS_METRES.w / 2;
   const cy = CANVAS_METRES.h / 2;
+
+  /**
+   * A rectangle in portrait metres -> dp on this canvas. In landscape the
+   * portrait canvas is turned a quarter-turn anticlockwise.
+   */
+  const place = (x: number, y: number, w: number, h: number): Placed =>
+    landscape
+      ? {
+          left: y * s,
+          top: (CANVAS_METRES.w - x - w) * s,
+          width: h * s,
+          height: w * s,
+        }
+      : {left: x * s, top: y * s, width: w * s, height: h * s};
 
   /** An axis-aligned outline, in metres. */
   const box = (x: number, y: number, w: number, h: number, fill?: string) => (
     <View
       style={[
         styles.abs,
-        {
-          left: x * s,
-          top: y * s,
-          width: w * s,
-          height: h * s,
-          borderWidth: line,
-          backgroundColor: fill,
-        },
+        place(x, y, w, h),
+        {borderWidth: line, backgroundColor: fill},
       ]}
     />
   );
 
   /** A filled dot, centred on a point in metres. */
   const dot = (x: number, y: number) => {
-    const d = Math.max(line * 2.5, 0.8 * s);
+    const d = Math.max(line * 2.5, 0.8 * s) / s; // metres
     return (
       <View
-        style={[
-          styles.abs,
-          styles.dot,
-          {left: x * s - d / 2, top: y * s - d / 2, width: d, height: d},
-        ]}
+        style={[styles.abs, styles.dot, place(x - d / 2, y - d / 2, d, d)]}
       />
     );
   };
+
+  /** A full circle outline, in metres. */
+  const ring = (x: number, y: number, r: number) => (
+    <View
+      style={[
+        styles.abs,
+        styles.ring,
+        place(x - r, y - r, 2 * r, 2 * r),
+        {borderRadius: r * s, borderWidth: line},
+      ]}
+    />
+  );
 
   /**
    * The part of a circle that falls inside a clip rectangle. Used for the
@@ -66,35 +101,27 @@ export default function FieldMarkings({width, height}: Props) {
     centre: {x: number; y: number},
     r: number,
     clip: {x: number; y: number; w: number; h: number},
-  ) => (
-    <View
-      key={key}
-      style={[
-        styles.abs,
-        styles.clip,
-        {
-          left: clip.x * s,
-          top: clip.y * s,
-          width: clip.w * s,
-          height: clip.h * s,
-        },
-      ]}>
-      <View
-        style={[
-          styles.abs,
-          styles.ring,
-          {
-            left: (centre.x - r - clip.x) * s,
-            top: (centre.y - r - clip.y) * s,
-            width: 2 * r * s,
-            height: 2 * r * s,
-            borderRadius: r * s,
-            borderWidth: line,
-          },
-        ]}
-      />
-    </View>
-  );
+  ) => {
+    const window = place(clip.x, clip.y, clip.w, clip.h);
+    const circle = place(centre.x - r, centre.y - r, 2 * r, 2 * r);
+    return (
+      <View key={key} style={[styles.abs, styles.clip, window]}>
+        <View
+          style={[
+            styles.abs,
+            styles.ring,
+            {
+              ...circle,
+              left: circle.left - window.left,
+              top: circle.top - window.top,
+              borderRadius: r * s,
+              borderWidth: line,
+            },
+          ]}
+        />
+      </View>
+    );
+  };
 
   const renderEnd = (end: End) => {
     const top = end === 'top';
@@ -153,28 +180,10 @@ export default function FieldMarkings({width, height}: Props) {
         style={[
           styles.abs,
           styles.fill,
-          {
-            left: m * s,
-            top: cy * s - line / 2,
-            width: PITCH.width * s,
-            height: line,
-          },
+          place(m, cy - line / s / 2, PITCH.width, line / s),
         ]}
       />
-      <View
-        style={[
-          styles.abs,
-          styles.ring,
-          {
-            left: (cx - PITCH.circleRadius) * s,
-            top: (cy - PITCH.circleRadius) * s,
-            width: 2 * PITCH.circleRadius * s,
-            height: 2 * PITCH.circleRadius * s,
-            borderRadius: PITCH.circleRadius * s,
-            borderWidth: line,
-          },
-        ]}
-      />
+      {ring(cx, cy, PITCH.circleRadius)}
       {dot(cx, cy)}
       {renderEnd('top')}
       {renderEnd('bottom')}

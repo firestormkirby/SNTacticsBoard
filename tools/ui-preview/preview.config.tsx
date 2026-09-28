@@ -66,7 +66,8 @@ const config: PreviewConfig = {
   devices: [
     { id: 'manta', label: 'Manta (A5X2)', width: 1024, height: 1365, note: '1024 × 1365 dp · 1920 × 2560 px page' },
     { id: 'a5x', label: 'A5X', width: 994, height: 1325, note: '994 × 1325 dp · 1404 × 1872 px page' },
-    { id: 'landscape', label: 'Manta, turned sideways', width: 1365, height: 1024, note: 'Portrait-only notice' },
+    { id: 'manta-landscape', label: 'Manta, landscape', width: 1365, height: 1024, note: '1365 × 1024 dp · 2560 × 1920 px page' },
+    { id: 'a5x-landscape', label: 'A5X, landscape', width: 1325, height: 994, note: '1325 × 994 dp · 1872 × 1404 px page' },
   ],
 
   scenarios: [

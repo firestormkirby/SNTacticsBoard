@@ -9,6 +9,9 @@
          must never grow its own scrollbars. The harness sizes the iframe. */
       html, body, #root { height: 100%; width: 100%; margin: 0; padding: 0; overflow: hidden; }
       body { background: #ffffff; }
+      /* A mouse drag would otherwise select text as it sweeps across the
+         panel. A device doesn't; a pen or finger drag selects nothing. */
+      #root { user-select: none; -webkit-user-select: none; }
     </style>
   </head>
   <body>

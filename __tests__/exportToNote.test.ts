@@ -66,5 +66,6 @@ it('refuses to export when no note is open', async () => {
 it('snaps near-miss capture sizes to the real page size', () => {
   expect(pageSizeFor(1920, 2559.4)).toEqual({width: 1920, height: 2560});
   expect(pageSizeFor(1404, 1871.6)).toEqual({width: 1404, height: 1872});
+  expect(pageSizeFor(2559.4, 1920)).toEqual({width: 2560, height: 1920});
   expect(pageSizeFor(1000, 1333.3)).toEqual({width: 1000, height: 1333});
 });

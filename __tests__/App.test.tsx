@@ -9,29 +9,29 @@ function layoutEvent(width: number, height: number) {
   return {nativeEvent: {layout: {x: 0, y: 0, width, height}}};
 }
 
-/** Mount the app and feed it the layout sizes a Nomad would report. */
-async function mountOnNomad() {
+/** Mount the app and report a board area of the given size, in dp. */
+async function mountWithBoard(width: number, height: number) {
   let root!: ReactTestRenderer.ReactTestRenderer;
   await ReactTestRenderer.act(async () => {
     root = ReactTestRenderer.create(<App />);
   });
   await ReactTestRenderer.act(async () => {
-    const views = root.root.findAll(
-      n => typeof n.props.onLayout === 'function',
-    );
-    // Root view first, then the board area below the toolbar.
-    views[0].props.onLayout(layoutEvent(994, 1325));
-    views[views.length - 1].props.onLayout(layoutEvent(994, 1249));
+    const board = root.root.find(n => typeof n.props.onLayout === 'function');
+    board.props.onLayout(layoutEvent(width, height));
   });
   return root;
 }
 
+/** The board area below the toolbar on an A5X held upright. */
+const mountOnNomad = () => mountWithBoard(994, 1249);
+
+/** Distinct draggable pieces on screen. */
 const pieceCount = (root: ReactTestRenderer.ReactTestRenderer) =>
-  root.root.findAll(
-    n =>
-      typeof n.props.accessibilityLabel === 'string' &&
-      n.props.accessibilityRole === 'adjustable',
-  ).length;
+  new Set(
+    root.root
+      .findAll(n => n.props.accessibilityRole === 'adjustable')
+      .map(n => n.props.accessibilityLabel),
+  ).size;
 
 beforeEach(async () => {
   await AsyncStorage.clear();
@@ -65,16 +65,20 @@ it('restores a saved drill and clears it', async () => {
   );
 });
 
-it('shows a portrait-only notice in landscape', async () => {
-  let root!: ReactTestRenderer.ReactTestRenderer;
-  await ReactTestRenderer.act(async () => {
-    root = ReactTestRenderer.create(<App />);
-  });
-  await ReactTestRenderer.act(async () => {
-    const views = root.root.findAll(
-      n => typeof n.props.onLayout === 'function',
+it('turns the pitch to run across the screen in landscape', async () => {
+  const pitchOrientation = async (w: number, h: number) => {
+    const root = await mountWithBoard(w, h);
+    const pitch = root.root.find(
+      n => typeof n.props.landscape === 'boolean' && 'width' in n.props,
     );
-    views[0].props.onLayout(layoutEvent(1325, 994));
+    return {landscape: pitch.props.landscape, pieces: pieceCount(root)};
+  };
+  expect(await pitchOrientation(1365, 948)).toEqual({
+    landscape: true,
+    pieces: 31,
   });
-  expect(JSON.stringify(root.toJSON())).toContain('Portrait only');
+  expect(await pitchOrientation(994, 1249)).toEqual({
+    landscape: false,
+    pieces: 31,
+  });
 });

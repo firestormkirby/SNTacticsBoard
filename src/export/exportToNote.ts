@@ -57,10 +57,12 @@ async function settle(p: Promise<unknown>, ms: number): Promise<void> {
   clearTimeout(timer);
 }
 
-/** Portrait note page sizes, in pixels, for the devices that run plugins. */
+/** Note page sizes, in pixels, for the devices that run plugins. */
 const PAGE_SIZES = [
   {width: 1404, height: 1872}, // A5X, A6X, Nomad
   {width: 1920, height: 2560}, // Manta
+  {width: 1872, height: 1404}, // the same, in landscape
+  {width: 2560, height: 1920},
 ];
 
 /**
