@@ -27,6 +27,7 @@ jest.mock('sn-plugin-lib', () => {
       jumpToPage: jest.fn(() => ok(true)),
     },
     PluginFileAPI: {
+      getNoteTotalPageNum: jest.fn(() => ok(12)),
       insertNotePage: jest.fn(() => ok(true)),
     },
     PluginNoteAPI: {

@@ -3,13 +3,25 @@
  * new page whose background is the diagram, then take the user to that page so
  * they can draw runs and passes over it with the pen.
  *
- * Two constraints shape the order of work:
+ * The order of work follows what Modulanner established on devices:
  *
  * 1. The capture needs the plugin view on screen, so it happens first.
  * 2. PluginComm/PluginFile calls can deadlock while the plugin view is open,
- *    so every note operation runs after closePluginView(). The JS runtime keeps
- *    going once the view is closed; ToastAndroid reports the outcome, since
- *    there is no plugin UI left to show it in.
+ *    so every note operation runs after closePluginView(). That call is
+ *    fire-and-forget; the SDK calls that follow take long enough that the
+ *    host has finished closing by the time they land.
+ * 3. Once the view is closed the host suspends the JS timer queue, so nothing
+ *    after closing may wait on setTimeout: it would not fire until the panel
+ *    reopened. Only awaited SDK calls move the flow on.
+ * 4. saveCurrentNote() comes first, or strokes still in the display buffer
+ *    are lost when insertNotePage saves the file.
+ * 5. insertNotePage's `page` is the index the new page takes, so the page
+ *    after the current one is `current + 1`. A PNG path is accepted as the
+ *    template. Older firmware answers null on success, so only an explicit
+ *    `success: false` counts as failure.
+ *
+ * ToastAndroid reports the outcome, since there is no plugin UI left to show
+ * it in.
  */
 import {PixelRatio, ToastAndroid} from 'react-native';
 import type {View} from 'react-native';
@@ -24,8 +36,6 @@ import {
 
 /** Where exported diagrams are kept: EXPORT/SNSoccer on the device. */
 const EXPORT_SUBDIR = 'SNSoccer';
-/** Built-in blank background, used only by the fallback path. */
-const BLANK_TEMPLATE = 'style_white';
 
 interface Response<T> {
   success?: boolean;
@@ -33,28 +43,25 @@ interface Response<T> {
   error?: {message?: string};
 }
 
-/** The SDK resolves `{success, result, error}`; turn a failure into a throw. */
-function unwrap<T>(res: unknown, what: string): T {
-  const r = res as Response<T> | null | undefined;
-  if (!r || r.success === false) {
-    throw new Error(`${what}: ${r?.error?.message ?? 'no response'}`);
+/**
+ * Throw on an explicit SDK failure. A null or wrapper-less answer is success:
+ * older firmware returns nothing at all from calls that worked.
+ */
+function check(res: unknown, what: string): void {
+  const r = res as Response<unknown> | null | undefined;
+  if (r && r.success === false) {
+    throw new Error(`${what}: ${r.error?.message ?? 'failed'}`);
   }
-  return r.result as T;
 }
 
-const sleep = (ms: number) => new Promise<void>(done => setTimeout(done, ms));
-
-/**
- * Some host calls (reloadFile in particular) can hang when the note app is busy.
- * Nothing after them depends on their result, so give up waiting after a while.
- */
-async function settle(p: Promise<unknown>, ms: number): Promise<void> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<void>(done => {
-    timer = setTimeout(done, ms);
-  });
-  await Promise.race([p.catch(() => undefined), timeout]);
-  clearTimeout(timer);
+/** A query whose answer is needed: failure or a missing result throws. */
+function answer<T>(res: unknown, what: string): T {
+  check(res, what);
+  const result = (res as Response<T> | null | undefined)?.result;
+  if (result === undefined || result === null) {
+    throw new Error(`${what}: no answer`);
+  }
+  return result;
 }
 
 /** Note page sizes, in pixels, for the devices that run plugins. */
@@ -125,9 +132,11 @@ function toast(message: string): void {
   ToastAndroid.show(message, ToastAndroid.LONG);
 }
 
-export type ExportOutcome =
-  | {kind: 'background'; page: number; png: string}
-  | {kind: 'picture'; page: number; png: string};
+export interface ExportOutcome {
+  /** 0-based index of the new page. */
+  page: number;
+  png: string;
+}
 
 /**
  * Close the plugin and add the captured PNG to the open note as a new page
@@ -136,68 +145,37 @@ export type ExportOutcome =
 export async function exportPngToNote(
   tmpPath: string,
 ): Promise<ExportOutcome | null> {
-  await PluginManager.closePluginView();
-  // Give the host a moment to finish tearing the view down.
-  await sleep(400);
+  PluginManager.closePluginView();
 
   try {
-    const notePath = unwrap<string>(
+    const notePath = answer<string>(
       await PluginCommAPI.getCurrentFilePath(),
       'getCurrentFilePath',
     );
-    if (!notePath || !/\.note$/i.test(notePath)) {
+    if (!/\.note$/i.test(notePath)) {
       toast('Soccer Board: open a note first, then export.');
       return null;
     }
-    const page = unwrap<number>(
+    const current = answer<number>(
       await PluginCommAPI.getCurrentPageNum(),
       'getCurrentPageNum',
     );
-    const png = await publishPng(tmpPath);
-    const newPage = page + 1;
-
-    // Flush the note app's in-memory edits before changing the file under it.
-    unwrap(await PluginNoteAPI.saveCurrentNote(), 'saveCurrentNote');
-
-    // Preferred: a page whose background (template) is the diagram. Pen
-    // strokes then sit on top of it and it can't be moved by accident.
-    const asBackground = (await PluginFileAPI.insertNotePage({
-      notePath,
-      page,
-      template: png,
-    })) as Response<boolean> | null;
-
-    let outcome: ExportOutcome;
-    if (asBackground?.success && asBackground.result !== false) {
-      await settle(PluginCommAPI.reloadFile(), 4000);
-      await PluginCommAPI.jumpToPage(newPage);
-      outcome = {kind: 'background', page: newPage, png};
-    } else {
-      // Fallback, if this firmware only takes built-in template names: a blank
-      // page with the diagram inserted as a picture.
-      console.warn(
-        '[snsoccer] template insert refused, inserting picture instead',
-        asBackground?.error?.message,
-      );
-      unwrap(
-        await PluginFileAPI.insertNotePage({
-          notePath,
-          page,
-          template: BLANK_TEMPLATE,
-        }),
-        'insertNotePage',
-      );
-      await settle(PluginCommAPI.reloadFile(), 4000);
-      unwrap(await PluginCommAPI.jumpToPage(newPage), 'jumpToPage');
-      await sleep(300);
-      unwrap(await PluginNoteAPI.insertImage(png), 'insertImage');
-      outcome = {kind: 'picture', page: newPage, png};
-    }
-
-    toast(
-      `Drill added as page ${newPage + 1}. Draw your runs and passes on it.`,
+    const total = answer<number>(
+      await PluginFileAPI.getNoteTotalPageNum(notePath),
+      'getNoteTotalPageNum',
     );
-    return outcome;
+    const png = await publishPng(tmpPath);
+    const page = Math.min(current + 1, total);
+
+    check(await PluginNoteAPI.saveCurrentNote(), 'saveCurrentNote');
+    check(
+      await PluginFileAPI.insertNotePage({notePath, page, template: png}),
+      'insertNotePage',
+    );
+    check(await PluginCommAPI.jumpToPage(page), 'jumpToPage');
+
+    toast(`Drill added as page ${page + 1}. Draw your runs and passes on it.`);
+    return {page, png};
   } catch (e) {
     console.error('[snsoccer] export failed', e);
     toast(`Soccer Board: export failed. ${(e as Error).message}`);

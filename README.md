@@ -43,17 +43,18 @@ runs and passes over it with the pen.
    resolution rather than scaled up from the smaller on-screen pitch, which
    keeps them sharp on e-ink.
 3. The plugin view closes. Note operations can deadlock while a plugin view is
-   open, so every SDK file call happens after this step.
+   open, so every SDK file call happens after this step. The host also pauses
+   JS timers once the view is closed, so nothing after this point waits on a
+   timer.
 4. The PNG is copied to `EXPORT/SNSoccer/drill-<timestamp>.png`, where the
    Note app can read it.
-5. `PluginNoteAPI.saveCurrentNote()`, then
-   `PluginFileAPI.insertNotePage({notePath, page, template: pngPath})`, then
-   `reloadFile()` and `jumpToPage(page + 1)`.
-6. **Fallback:** if the firmware only accepts built-in template names, the
-   plugin inserts a blank `style_white` page, jumps to it, and places the
-   diagram with `PluginNoteAPI.insertImage()`. That gives a movable picture
-   instead of a fixed background, but you can still draw over it.
-7. A toast reports the outcome. The export button is registered for NOTE only.
+5. `PluginNoteAPI.saveCurrentNote()`, so strokes you just wrote aren't lost,
+   then `PluginFileAPI.insertNotePage({notePath, page: current + 1, template:
+   pngPath})` and `jumpToPage(current + 1)`. `page` is the index the new page
+   takes. Older firmware answers `null` on success, which counts as success.
+6. A toast reports the outcome. The export button is registered for NOTE only.
+
+Steps 3 to 5 follow what Modulanner established on devices.
 
 ## Build
 
@@ -96,7 +97,7 @@ npm run preview               # http://localhost:5178
 ```
 
 The scenarios are *First run*, *Rondo drill*, *Full match shape*, *Export from
-a PDF*, *Template path refused* (exercises the fallback) and *Damaged save*.
+a PDF*, *Page insert fails* and *Damaged save*.
 The device list has each screen upright and in landscape.
 You can drag pieces with the mouse. When you press **Export to Note**, the
 **Last capture** card shows the page that would be added, and the browser
@@ -127,14 +128,12 @@ npm run lint
 
 These depend on host behaviour that can't be exercised off-device:
 
-- Whether `insertNotePage` accepts a PNG path as `template`. If it doesn't,
-  you get the picture fallback and the toast still reports success. Look for
-  `template insert refused` in `adb logcat -s ReactNativeJS:V`.
-- Whether the page index is 0-based and inserts *after* `page`, as the SDK
-  docs say. The new page should appear directly after the one you were on.
 - Whether `Dimensions.get('screen')` times the pixel ratio equals the note
   page size. The export sheet is sized from it, so a mismatch would show up as
   a stretched diagram.
-- Exporting in landscape. The page is captured the way the screen is turned,
-  1872 × 1404 or 2560 × 1920. Check how the note shows that page, and whether
-  the host takes a landscape image as a template.
+- Rotation. Modulanner found that the plugin view does not rotate with the
+  device, so the landscape layout may only appear where the host really gives
+  the plugin a landscape view. Check what the board looks like with the
+  device turned.
+- Exporting in landscape: how the note shows a page captured at 1872 × 1404
+  or 2560 × 1920.

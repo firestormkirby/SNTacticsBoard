@@ -97,20 +97,19 @@ const config: PreviewConfig = {
       sdk: { page: { filePath: '/storage/emulated/0/Document/Laws of the Game.pdf' } },
     },
     {
-      id: 'template-refused',
-      label: 'Template path refused',
-      note: 'insertNotePage rejects a PNG template: Export falls back to a picture on a blank page.',
+      id: 'insert-fails',
+      label: 'Page insert fails',
+      note: 'insertNotePage reports a missing template: Export shows the error and stays on this page.',
       storage: rondo,
       sdk: {
         overrides: {
           PluginFileAPI: {
-            insertNotePage: (params: { template: string }) => {
+            insertNotePage: (params: unknown) => {
               console.log('[preview-sdk] PluginFileAPI.insertNotePage', params);
-              return Promise.resolve(
-                params.template === 'style_white'
-                  ? { success: true, result: true }
-                  : { success: false, error: { code: 108, message: 'template not found' } },
-              );
+              return Promise.resolve({
+                success: false,
+                error: { code: 108, message: 'Background template file does not exist!' },
+              });
             },
           },
         },

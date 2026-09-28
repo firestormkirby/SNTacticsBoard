@@ -13,7 +13,7 @@ jest.spyOn(ToastAndroid, 'show').mockImplementation(() => {});
 
 beforeEach(() => jest.clearAllMocks());
 
-it('closes the view, then inserts the diagram as the next page background', async () => {
+it('closes the view, then inserts the diagram as the page after this one', async () => {
   const out = await exportPngToNote('/cache/snap.png');
 
   expect(PluginManager.closePluginView).toHaveBeenCalled();
@@ -23,31 +23,57 @@ it('closes the view, then inserts the diagram as the next page background', asyn
       /^\/storage\/emulated\/0\/EXPORT\/SNSoccer\/drill-\d{8}-\d{6}\.png$/,
     ),
   );
-  expect(PluginNoteAPI.saveCurrentNote).toHaveBeenCalled();
   const png = (FileUtils.copyFile as jest.Mock).mock.calls[0][1];
+  // Current page is index 2; the new page takes index 3, straight after it.
   expect(PluginFileAPI.insertNotePage).toHaveBeenCalledWith({
     notePath: '/storage/emulated/0/Note/Drills.note',
-    page: 2,
+    page: 3,
     template: png,
   });
   expect(PluginCommAPI.jumpToPage).toHaveBeenCalledWith(3);
-  expect(PluginNoteAPI.insertImage).not.toHaveBeenCalled();
-  expect(out).toEqual({kind: 'background', page: 3, png});
+  expect(out).toEqual({page: 3, png});
 });
 
-it('falls back to a blank page plus a picture when the template is refused', async () => {
-  (PluginFileAPI.insertNotePage as jest.Mock)
-    .mockResolvedValueOnce({success: false, error: {message: 'bad template'}})
-    .mockResolvedValueOnce({success: true, result: true});
+it('saves the note before inserting, so recent strokes are kept', async () => {
+  await exportPngToNote('/cache/snap.png');
+  const saved = (PluginNoteAPI.saveCurrentNote as jest.Mock).mock
+    .invocationCallOrder[0];
+  const inserted = (PluginFileAPI.insertNotePage as jest.Mock).mock
+    .invocationCallOrder[0];
+  expect(saved).toBeLessThan(inserted);
+});
 
+it('treats a null answer from older firmware as success', async () => {
+  (PluginFileAPI.insertNotePage as jest.Mock).mockResolvedValueOnce(null);
+  (PluginNoteAPI.saveCurrentNote as jest.Mock).mockResolvedValueOnce(null);
   const out = await exportPngToNote('/cache/snap.png');
-
-  expect(
-    (PluginFileAPI.insertNotePage as jest.Mock).mock.calls[1][0].template,
-  ).toBe('style_white');
+  expect(out?.page).toBe(3);
   expect(PluginCommAPI.jumpToPage).toHaveBeenCalledWith(3);
-  expect(PluginNoteAPI.insertImage).toHaveBeenCalledWith(out?.png);
-  expect(out?.kind).toBe('picture');
+});
+
+it('appends at the end when exporting from the last page', async () => {
+  (PluginCommAPI.getCurrentPageNum as jest.Mock).mockResolvedValueOnce({
+    success: true,
+    result: 11,
+  });
+  const out = await exportPngToNote('/cache/snap.png');
+  expect(
+    (PluginFileAPI.insertNotePage as jest.Mock).mock.calls[0][0].page,
+  ).toBe(12);
+  expect(out?.page).toBe(12);
+});
+
+it('reports a refused insert and does not navigate', async () => {
+  (PluginFileAPI.insertNotePage as jest.Mock).mockResolvedValueOnce({
+    success: false,
+    error: {message: 'Background template file does not exist!'},
+  });
+  expect(await exportPngToNote('/cache/snap.png')).toBeNull();
+  expect(PluginCommAPI.jumpToPage).not.toHaveBeenCalled();
+  expect(ToastAndroid.show).toHaveBeenCalledWith(
+    expect.stringContaining('Background template file does not exist!'),
+    expect.anything(),
+  );
 });
 
 it('refuses to export when no note is open', async () => {
