@@ -18,8 +18,10 @@ import type { CaptureEventDetail } from './mocks/react-native-view-shot';
 import config from '../preview.config';
 
 const params = new URLSearchParams(window.location.search);
+// The harness passes the scenario in the hash; ?scenario= still works by hand.
+const requested = params.get('scenario') ?? decodeURIComponent(window.location.hash.slice(1));
 const scenario =
-  config.scenarios.find(s => s.id === params.get('scenario')) ?? config.scenarios[0];
+  config.scenarios.find(s => s.id === requested) ?? config.scenarios[0];
 
 async function boot(): Promise<void> {
   seed(scenario.storage ?? {});
