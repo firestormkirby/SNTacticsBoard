@@ -1,0 +1,5 @@
+{
+  "extends": "@react-native/typescript-config/tsconfig.json",
+  // tools/ui-preview is a browser app with its own tsconfig.
+  "exclude": ["node_modules", "tools"]
+}

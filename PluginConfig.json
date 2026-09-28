@@ -1,0 +1,11 @@
+{
+  "name": "Soccer Board",
+  "desc": "Coach's whiteboard: drag players, cones and balls onto a pitch, then export the drill as a new page in the open note.",
+  "iconPath": "assets/icon.png",
+  "versionName": "0.1.0",
+  "versionCode": "1",
+  "pluginID": "yzcqk0vz6ecwbd9a",
+  "pluginKey": "snsoccer",
+  "jsMainPath": "index",
+  "author": "firestormkirby"
+}

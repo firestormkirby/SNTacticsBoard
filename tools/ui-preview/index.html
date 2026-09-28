@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Plugin UI preview</title>
+    <style>
+      :root {
+        --bg: #f4f4f5;
+        --panel: #ffffff;
+        --line: #d8d8dc;
+        --ink: #18181b;
+        --dim: #6b6b74;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font: 14px/1.5 "Inter", -apple-system, "Segoe UI", system-ui, sans-serif;
+        color: var(--ink);
+        background: var(--bg);
+        display: flex;
+        height: 100vh;
+        overflow: hidden;
+      }
+      aside {
+        width: 270px;
+        flex: 0 0 270px;
+        background: var(--panel);
+        border-right: 1px solid var(--line);
+        padding: 18px 16px;
+        overflow-y: auto;
+      }
+      h1 { font-size: 15px; margin: 0 0 2px; }
+      .sub { color: var(--dim); font-size: 12px; margin: 0 0 18px; }
+      h2 {
+        font-size: 11px; text-transform: uppercase; letter-spacing: .07em;
+        color: var(--dim); margin: 20px 0 8px;
+      }
+      button.opt {
+        display: block; width: 100%; text-align: left; cursor: pointer;
+        background: #fff; border: 1px solid var(--line); border-radius: 7px;
+        padding: 8px 10px; margin-bottom: 6px; font: inherit; color: inherit;
+      }
+      button.opt:hover { border-color: #9a9aa2; }
+      button.opt[aria-pressed="true"] { background: var(--ink); color: #fff; border-color: var(--ink); }
+      button.opt small { display: block; font-size: 11px; opacity: .72; margin-top: 2px; line-height: 1.35; }
+      .row { display: flex; gap: 6px; }
+      .row button.opt { margin-bottom: 6px; }
+      main {
+        flex: 1; min-width: 0; overflow: auto; padding: 24px;
+        display: flex; flex-direction: column; align-items: center; gap: 10px;
+      }
+      .frame-wrap { transform-origin: top center; }
+      iframe {
+        border: 1px solid #c8c8ce;
+        box-shadow: 0 8px 28px rgba(0,0,0,.13);
+        background: #fff;
+        display: block;
+      }
+      .hint { color: var(--dim); font-size: 12px; max-width: 620px; text-align: center; }
+      code { background: #ececef; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <aside>
+      <h1 id="title">Plugin UI preview</h1>
+      <p class="sub">Your plugin's real UI, in a browser.</p>
+
+      <h2>Scenario</h2>
+      <div id="scenarios"></div>
+
+      <h2>Device</h2>
+      <div id="devices"></div>
+
+      <h2>Zoom</h2>
+      <div class="row" id="zooms"></div>
+
+      <h2>Capture</h2>
+      <button class="opt" id="reload">Reload the panel</button>
+      <button class="opt" id="popout">Open device view alone
+        <small>Full size, no harness chrome. Screenshot this.</small>
+      </button>
+    </aside>
+
+    <main>
+      <div class="frame-wrap" id="wrap">
+        <iframe id="device" title="Device screen"></iframe>
+      </div>
+      <p class="hint" id="hint"></p>
+    </main>
+
+    <script type="module" src="/src/harness.ts"></script>
+  </body>
+</html>

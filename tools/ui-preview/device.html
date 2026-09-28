@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Plugin panel</title>
+    <style>
+      /* The page IS the device screen: the panel measures itself against
+         window dimensions, so this document must be exactly device-sized and
+         must never grow its own scrollbars. The harness sizes the iframe. */
+      html, body, #root { height: 100%; width: 100%; margin: 0; padding: 0; overflow: hidden; }
+      body { background: #ffffff; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <!--
+      Metro's asset require(). React Native code declares bundled images as
+      require('./assets/thing.png') at module scope, a compile-time construct
+      in a Metro bundle that is absent in a browser. It has to exist before the
+      module graph is evaluated, hence a classic script tag here rather than
+      anything inside device.tsx, whose imports hoist above every statement in
+      it.
+
+      The stub returns the path as a uri, which is enough for code that hands
+      the result to Image.resolveAssetSource() or copies it somewhere. If your
+      plugin needs the real bytes, import the asset normally in your preview
+      config and pass it through a scenario instead.
+    -->
+    <script>
+      window.require = function (p) { return { uri: String(p), __rnAsset: true }; };
+    </script>
+    <script type="module" src="/src/device.tsx"></script>
+  </body>
+</html>
