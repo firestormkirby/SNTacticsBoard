@@ -13,7 +13,7 @@ import { View, Text, Pressable, Image } from 'react-native';
 
 import { seed } from './mocks/async-storage';
 import { seedFiles, seedHashes } from './mocks/react-native-fs';
-import { onViewStateChange, CURRENT_PAGE, configureSdk } from './mocks/sn-plugin-lib';
+import { onViewStateChange, CURRENT_PAGE, configureSdk, notifyPluginLife } from './mocks/sn-plugin-lib';
 import { resetNote } from './mocks/note';
 import NotePage from './NotePage';
 import type { CaptureEventDetail } from './mocks/react-native-view-shot';
@@ -49,7 +49,10 @@ async function boot(): Promise<void> {
    * pixel, so these two must agree.
    */
   CURRENT_PAGE.pageSize = { width: window.innerWidth, height: window.innerHeight };
-  resetNote(CURRENT_PAGE.totalPages, CURRENT_PAGE.pageNum, CURRENT_PAGE.template || 'style_white');
+  resetNote(
+    CURRENT_PAGE.totalPages, CURRENT_PAGE.pageNum,
+    CURRENT_PAGE.template || 'style_white', CURRENT_PAGE.filePath,
+  );
 
   await config.boot?.(scenario);
 }
@@ -204,7 +207,14 @@ function Device() {
     <View style={{ height: '100%', width: '100%', backgroundColor: '#ffffff' }}>
       <Backdrop />
       {config.simulateNote && (
-        <NotePage onOpenPlugin={() => { if (!open) { setGeneration(g => g + 1); setOpen(true); } }} />
+        <NotePage
+          onOpenPlugin={() => {
+            if (open) return;
+            setGeneration(g => g + 1);
+            setOpen(true);
+            notifyPluginLife(2); // the toolbar opening the panel
+          }}
+        />
       )}
       {open
         ? <Panel key={generation} />

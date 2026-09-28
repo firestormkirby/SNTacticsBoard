@@ -14,14 +14,28 @@ interface Page {
 
 const ok = (result?: unknown) => Promise.resolve({success: true, result});
 
-export function createFakeNote(opts: {dropsUserData?: boolean} = {}) {
+export function createFakeNote(
+  opts: {dropsUserData?: boolean; noJump?: boolean} = {},
+) {
+  const notePath = '/storage/emulated/0/Note/Drills.note';
   const state = {
-    notePath: '/storage/emulated/0/Note/Drills.note',
+    notePath,
     current: 0,
     pageSize: {width: 1404, height: 1872},
+    /** Every note file, by path. `pages` is the open one's. */
+    notes: new Map<string, Page[]>(),
     pages: [] as Page[],
     files: new Set<string>(),
     calls: [] as string[],
+  };
+  state.notes.set(notePath, state.pages);
+  state.files.add(notePath);
+  const pagesOf = (path: string) => {
+    const pages = state.notes.get(path);
+    if (!pages) {
+      throw new Error(`no such note: ${path}`);
+    }
+    return pages;
   };
   const newPage = (template: string): Page => ({
     template,
@@ -68,37 +82,66 @@ export function createFakeNote(opts: {dropsUserData?: boolean} = {}) {
         remove(state.pages[page], nums);
         return ok(true);
       },
-      jumpToPage: (page: number) => {
-        state.current = page;
-        return ok(true);
-      },
+      ...(opts.noJump
+        ? {}
+        : {
+            jumpToPage: (page: number) => {
+              state.current = page;
+              return ok(true);
+            },
+          }),
     },
     PluginFileAPI: {
       getPageSize: () => ok(state.pageSize),
-      getNoteTotalPageNum: () => ok(state.pages.length),
-      getElements: (page: number) =>
-        ok(state.pages[page].elements.map(e => ({...e, recycle: () => {}}))),
-      insertElements: (_path: string, page: number, els: Element[]) => {
+      getNoteTotalPageNum: (path: string) => ok(pagesOf(path).length),
+      getElements: (page: number, path: string) =>
+        ok(pagesOf(path)[page].elements.map(e => ({...e, recycle: () => {}}))),
+      insertElements: (path: string, page: number, els: Element[]) => {
         track('insertElements');
-        els.forEach(e => store(state.pages[page], e));
+        els.forEach(e => store(pagesOf(path)[page], e));
         return ok(true);
       },
-      getLayers: (_path: string, page: number) => ok(state.pages[page].layers),
-      insertLayer: (_path: string, page: number, layer: any) => {
-        state.pages[page].layers.push({
+      getLayers: (path: string, page: number) => ok(pagesOf(path)[page].layers),
+      insertLayer: (path: string, page: number, layer: any) => {
+        pagesOf(path)[page].layers.push({
           layerId: layer.layerId,
           name: layer.name,
         });
         return ok(true);
       },
-      insertNotePage: ({page, template}: {page: number; template: string}) => {
+      insertNotePage: ({
+        notePath: path,
+        page,
+        template,
+      }: {
+        notePath: string;
+        page: number;
+        template: string;
+      }) => {
         track('insertNotePage');
-        state.pages.splice(page, 0, newPage(template));
+        pagesOf(path).splice(page, 0, newPage(template));
         return ok(true);
       },
-      generateNoteTemplatePng: (_path: string, page: number, png: string) => {
+      removeNotePage: (path: string, page: number) => {
+        track('removeNotePage');
+        pagesOf(path).splice(page, 1);
+        return ok(true);
+      },
+      createNote: ({
+        notePath: path,
+        template,
+      }: {
+        notePath: string;
+        template: string;
+      }) => {
+        track('createNote');
+        state.notes.set(path, [newPage(template)]);
+        state.files.add(path);
+        return ok(true);
+      },
+      generateNoteTemplatePng: (path: string, page: number, png: string) => {
         state.files.add(png);
-        return ok(state.pages[page].template);
+        return ok(pagesOf(path)[page].template);
       },
     },
     PluginNoteAPI: {

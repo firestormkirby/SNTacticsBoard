@@ -46,10 +46,14 @@ import {
   copyThisPage,
   getCurrentPieces,
   handle,
+  loadLayoutAsPage,
   loadLayoutHere,
+  saveThisPage,
+  addPitch,
   pageToScreen,
   panelOpened,
   screenToPage,
+  setButtonOn,
   showButton,
   startPaletteController,
   stopPaletteController,
@@ -57,6 +61,7 @@ import {
 import {PALETTE_EVENT} from '../src/palette/bridge';
 import {getContext, readPieces} from '../src/page/pageOps';
 import {loadPaletteSettings} from '../src/palette/settings';
+import {deleteLayout, listLayouts} from '../src/layouts/layoutStore';
 
 const at = (x: number, y: number, rotation = 0) => ({
   x,
@@ -142,11 +147,15 @@ describe('pieces', () => {
 describe('following the page', () => {
   it('lays the handles out again when the page turns', async () => {
     await handle({type: 'drop', kind: 'cone', ...at(300, 500)});
-    mockNote.sdk.PluginFileAPI.insertNotePage({page: 1, template: 'x'});
-    await mockNote.sdk.PluginCommAPI.jumpToPage(1);
+    mockNote.sdk.PluginFileAPI.insertNotePage({
+      notePath: mockNote.state.notePath,
+      page: 1,
+      template: 'x',
+    });
+    mockNote.state.current = 1;
     await handle({type: 'tick'});
     expect(handles()).toEqual([]);
-    await mockNote.sdk.PluginCommAPI.jumpToPage(0);
+    mockNote.state.current = 0;
     await handle({type: 'tick'});
     expect(handles()).toHaveLength(1);
   });
@@ -201,17 +210,88 @@ describe('the button', () => {
 
 describe('menu actions', () => {
   it('copies after the menu closes, then brings the button back', async () => {
+    await setButtonOn(true);
     startPaletteController();
-    await showButton();
     panelOpened();
-    closePanelThen(copyThisPage);
     await settle();
-    expect(mockNote.sdk.PluginManager.closePluginView).toHaveBeenCalled();
+    mockPalette.show.mockClear();
+    await closePanelThen(copyThisPage);
+    // The button is back up before the menu closes, not after.
+    expect(mockPalette.show).toHaveBeenCalledTimes(1);
+    expect(mockPalette.show.mock.invocationCallOrder[0]).toBeLessThan(
+      (mockNote.sdk.PluginManager.closePluginView as jest.Mock).mock
+        .invocationCallOrder[0],
+    );
+    await settle();
     expect(mockNote.state.current).toBe(1);
     expect((ToastAndroid.show as jest.Mock).mock.calls.at(-1)[0]).toBe(
       'Copied to page 2.',
     );
-    expect(mockPalette.show).toHaveBeenCalledTimes(2);
+  });
+
+  it('says where the page went when it cannot go there', async () => {
+    mockNote = createFakeNote({noJump: true});
+    expect(await addPitch().catch(e => e.message)).toMatch(/prepare the pitch/);
+    mockNote.state.files.add(
+      '/storage/emulated/0/EXPORT/SNSoccer/pitch-1404x1872.png',
+    );
+    expect(await addPitch()).toBe(
+      'Pitch added as page 2, after this one. Turn the page to see it.',
+    );
+  });
+
+  it('saves a whole page and adds it back as a new page', async () => {
+    mockNote.state.pages[0].elements.push({type: 0, numInPage: 900});
+    await handle({type: 'drop', kind: 'cone', ...at(300, 500)});
+    expect(await saveThisPage('Rondo')).toBe('Saved "Rondo".');
+
+    const lib = '/storage/emulated/0/EXPORT/SNSoccer/Layouts.note';
+    expect(mockNote.state.notes.get(lib)).toHaveLength(1);
+    const [saved] = await listLayouts();
+    expect(saved).toMatchObject({name: 'Rondo', libPage: 0, marks: 1});
+    expect(saved.pieces).toHaveLength(1);
+
+    // Clear the page, then bring the layout back as a new page.
+    mockNote.state.pages[0].elements = [];
+    expect(await loadLayoutAsPage(saved)).toBe('"Rondo" added as page 2.');
+    expect(mockNote.state.current).toBe(1);
+    const copy = mockNote.state.pages[1];
+    expect(copy.template).toBe(saved.background);
+    expect(copy.elements.length).toBeGreaterThan(1);
+    expect((await readPieces(await getContext())).map(p => p.kind)).toEqual([
+      'cone',
+    ]);
+  });
+
+  it('keeps the layouts note in step with the list', async () => {
+    const lib = '/storage/emulated/0/EXPORT/SNSoccer/Layouts.note';
+    await saveThisPage('A');
+    await saveThisPage('B');
+    await saveThisPage('C');
+    expect(mockNote.state.notes.get(lib)).toHaveLength(3);
+
+    // Saving under a name again replaces that layout's page.
+    await saveThisPage('a');
+    let list = await listLayouts();
+    expect(mockNote.state.notes.get(lib)).toHaveLength(3);
+    expect(list.map(l => [l.name, l.libPage])).toEqual([
+      ['a', 2],
+      ['C', 1],
+      ['B', 0],
+    ]);
+
+    // Deleting in the menu queues the page; it goes once the menu closes.
+    await deleteLayout(list.find(l => l.name === 'B')!.id);
+    startPaletteController();
+    panelOpened();
+    await closePanelThen(async () => {});
+    await settle();
+    list = await listLayouts();
+    expect(mockNote.state.notes.get(lib)).toHaveLength(2);
+    expect(list.map(l => [l.name, l.libPage])).toEqual([
+      ['a', 1],
+      ['C', 0],
+    ]);
   });
 
   it('loads a layout in place of the pieces on the page', async () => {

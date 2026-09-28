@@ -24,8 +24,8 @@
  */
 import type { SdkConfig } from '../config';
 import {
-  NOTE, addElements, addLayer, copyImage, elementsOn, goToPage, hasImage,
-  insertPage, layersOn, removeElements, snapshotTemplate,
+  NOTE, addElements, addLayer, copyImage, createNoteFile, elementsOn, goToPage, hasImage,
+  insertPage, layersOn, noteExists, pageCount, removeElements, removePage, snapshotTemplate,
 } from './note';
 
 const ok = <T,>(result?: T) => Promise.resolve({ success: true, result });
@@ -50,6 +50,16 @@ function setView(open: boolean) {
   for (const fn of viewListeners) fn(open);
 }
 
+/**
+ * plugin_life, as registerPluginLifeListener reports it: 2 when the panel
+ * opens (from the toolbar, or showPluginView), 3 when the HOST closes it.
+ * The plugin's own closePluginView sends nothing, as on a device.
+ */
+const lifeListeners = new Set<{ onMsg: (d: { state: number }) => void }>();
+export function notifyPluginLife(state: number): void {
+  for (const l of lifeListeners) l.onMsg({ state });
+}
+
 /** A plain-valued answer that still leaves a line in the call trace. */
 function logged<T>(name: string, value: T) {
   return (...args: unknown[]) => {
@@ -70,8 +80,12 @@ const defaults: Record<string, Record<string, (...args: any[]) => any>> = {
     registerMotionListener: () => ok(),
     registerLangListener: () => ok(),
     addPluginLifeListener: () => ok(),
+    registerPluginLifeListener: (l: { onMsg: (d: { state: number }) => void }) => {
+      lifeListeners.add(l);
+      return { remove: () => lifeListeners.delete(l) };
+    },
     addEventListener: () => ok(),
-    showPluginView: () => { setView(true); return ok(); },
+    showPluginView: () => { setView(true); notifyPluginLife(2); return ok(); },
     closePluginView: () => { setView(false); return ok(); },
     showToast: (msg: string) => { toast(msg); return ok(); },
     // Plain numbers on devices, not APIResponse: 1 = held; 2 = always allowed.
@@ -110,30 +124,35 @@ const defaults: Record<string, Record<string, (...args: any[]) => any>> = {
     },
   },
   PluginFileAPI: {
-    getNoteTotalPageNum: () => ok(NOTE.pages.length),
+    getNoteTotalPageNum: (path?: string) => ok(pageCount(path)),
     getPageSize: () => ok(CURRENT_PAGE.pageSize),
     getKeyWords: () => ok([]),
-    getElements: (page: number) => ok(elementsOn(page)),
+    getElements: (page: number, path?: string) => ok(elementsOn(page, path)),
     getElementNumList: () => ok([]),
     getTitles: () => ok([]),
-    insertElements: (_path: string, page: number, els: unknown[]) => {
-      addElements(page, els);
+    insertElements: (path: string, page: number, els: unknown[]) => {
+      addElements(page, els, undefined, path);
       return ok(true);
     },
     modifyElements: () => ok(),
-    deleteElements: (_path: string, page: number, nums: number[]) => {
-      removeElements(page, nums);
+    deleteElements: (path: string, page: number, nums: number[]) => {
+      removeElements(page, nums, path);
       return ok(true);
     },
-    insertNotePage: (params: { page: number; template: string }) => {
-      insertPage(params.page, params.template);
+    insertNotePage: (params: { notePath?: string; page: number; template: string }) => {
+      insertPage(params.page, params.template, params.notePath);
       return ok(true);
     },
-    getLayers: (_path: string, page: number) => ok(layersOn(page)),
-    insertLayer: (_path: string, page: number, layer: { layerId?: number; name?: string }) =>
-      ok(addLayer(page, layer)),
-    generateNoteTemplatePng: (_path: string, page: number, png: string) => {
-      snapshotTemplate(page, png, CURRENT_PAGE.pageSize);
+    removeNotePage: (path: string, page: number) => ok(removePage(page, path)),
+    createNote: (params: { notePath: string; template: string }) => {
+      createNoteFile(params.notePath, params.template);
+      return ok(true);
+    },
+    getLayers: (path: string, page: number) => ok(layersOn(page, path)),
+    insertLayer: (path: string, page: number, layer: { layerId?: number; name?: string }) =>
+      ok(addLayer(page, layer, path)),
+    generateNoteTemplatePng: (path: string, page: number, png: string) => {
+      snapshotTemplate(page, png, CURRENT_PAGE.pageSize, path);
       return ok(true);
     },
     openFile: () => ok(),
@@ -159,7 +178,7 @@ const defaults: Record<string, Record<string, (...args: any[]) => any>> = {
   FileUtils: {
     exists: (path: string) => {
       console.log('[preview-sdk] FileUtils.exists', path);
-      return Promise.resolve(hasImage(path));
+      return Promise.resolve(hasImage(path) || noteExists(path));
     },
     getExternalDirPath: logged('FileUtils.getExternalDirPath', []),
     makeDir: logged('FileUtils.makeDir', true),

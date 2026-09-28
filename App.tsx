@@ -8,7 +8,8 @@
  *
  * This menu switches the button on, and holds the two exports:
  *  1. Copy this page to a new page, with everything on it.
- *  2. Save where the pieces are under a name, to load onto any page later.
+ *  2. Save this page under a name, to add again later as a new page, or to
+ *     put just its pieces onto another page.
  *
  * Anything that changes the note runs after the menu closes, because SDK
  * calls can deadlock while it is open (see src/palette/controller.ts).
@@ -32,7 +33,6 @@ import {
   SavedLayout,
   deleteLayout,
   listLayouts,
-  saveLayout,
 } from './src/layouts/layoutStore';
 import {hasPitch, pageSizeForScreen, savePitch} from './src/page/capture';
 import {PieceKind} from './src/page/pieceShapes';
@@ -40,17 +40,19 @@ import {ensureFileAccess} from './src/sdk/filePermissions';
 import {palette} from './src/palette/bridge';
 import {
   addPitch,
+  buttonProblem,
   closePanelThen,
   copyThisPage,
-  getCurrentPieces,
-  hideButton,
+  lastButtonError,
+  loadLayoutAsPage,
   loadLayoutHere,
+  onMenuOpen,
   panelOpened,
+  saveThisPage,
+  ButtonProblem,
+  setButtonOn as switchButton,
 } from './src/palette/controller';
-import {
-  loadPaletteSettings,
-  updatePaletteSettings,
-} from './src/palette/settings';
+import {loadPaletteSettings} from './src/palette/settings';
 
 type PitchState = 'checking' | 'making' | 'ready' | 'failed' | 'blocked';
 
@@ -89,7 +91,6 @@ export default function App(): React.JSX.Element {
   const [layouts, setLayouts] = useState<SavedLayout[]>([]);
   const [name, setName] = useState('');
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
 
   const screen = useRef(Dimensions.get('screen')).current;
   const pageSize = useRef(
@@ -97,11 +98,11 @@ export default function App(): React.JSX.Element {
   ).current;
   const sheetRef = useRef<View>(null);
   const capturing = useRef(false);
-  // What was on the page when the menu opened: the menu can't read the note.
-  const here = useRef(getCurrentPieces()).current;
-  const pieceCount = here?.pieces.length ?? 0;
+  // Why the button didn't come up last time, if it didn't.
+  const [problem, setProblem] = useState<ButtonProblem | null>(null);
 
   const refresh = useCallback(async () => {
+    setProblem(buttonProblem());
     setPermission(await palette.canDrawOverlays());
     setButtonOn((await loadPaletteSettings()).visible);
     setLayouts(await listLayouts());
@@ -129,10 +130,14 @@ export default function App(): React.JSX.Element {
   }, [pageSize]);
 
   useEffect(() => {
+    // Every opening, not just this first one: the tree stays mounted.
+    const off = onMenuOpen(() => {
+      refresh();
+      askForFiles();
+    });
     // Opened from the toolbar rather than the button: take the button down.
     panelOpened();
-    refresh();
-    askForFiles();
+    return off;
   }, [askForFiles, refresh]);
 
   const onSheetLayout = useCallback(async () => {
@@ -150,31 +155,20 @@ export default function App(): React.JSX.Element {
     }
   }, [pageSize]);
 
-  const showButton = useCallback(async () => {
-    await updatePaletteSettings({visible: true});
-    close(); // the button comes up as the menu closes
+  const toggleButton = useCallback(async (on: boolean) => {
+    setButtonOn(on);
+    await switchButton(on);
   }, []);
 
-  const hide = useCallback(async () => {
-    await hideButton();
-    setButtonOn(false);
-  }, []);
-
-  const save = useCallback(async () => {
-    if (!here || here.pieces.length === 0) {
+  const save = useCallback(() => {
+    const trimmed = name.trim();
+    if (!trimmed) {
       return;
     }
-    try {
-      const saved = await saveLayout(name, here.pieces, here.ctx.pageSize);
-      setName('');
-      setNotice(
-        `Saved "${saved.name}" with ${plural(saved.pieces.length, 'piece')}.`,
-      );
-      setLayouts(await listLayouts());
-    } catch (e) {
-      setNotice((e as Error).message);
-    }
-  }, [here, name]);
+    setName('');
+    // Reading the page needs the menu closed; a message confirms the save.
+    closePanelThen(() => saveThisPage(trimmed));
+  }, [name]);
 
   const remove = useCallback(
     async (id: string) => {
@@ -211,54 +205,25 @@ export default function App(): React.JSX.Element {
           contentContainerStyle={styles.body}
           keyboardShouldPersistTaps="handled">
           <Section title="Floating button">
-            {!palette.available ? (
-              <Text style={styles.para}>
-                The floating button isn't in this build of the plugin. Build it
-                with npm run build:plugin, which includes its native code.
+            <View style={styles.setting}>
+              <Text style={[styles.para, styles.settingText]}>
+                A small button over your page. Tap it for the pieces and drag
+                one onto the page; drag a piece on the page to move it, or onto
+                the button to remove it. Drag the button to move it, and hold it
+                to come back here.
               </Text>
-            ) : permission === false ? (
-              <>
-                <Text style={styles.para}>
-                  The button floats over the note, which needs Android's
-                  "Display over other apps" permission for the Supernote plugin
-                  host. Allow it on the next screen, then come back here.
-                </Text>
-                <View style={styles.row}>
-                  <Button
-                    label="Allow the button"
-                    primary
-                    onPress={() => palette.requestOverlayPermission()}
-                  />
-                  <Button label="I've allowed it" onPress={refresh} />
-                </View>
-              </>
-            ) : (
-              <>
-                <Text style={styles.para}>
-                  Tap the button to open the pieces and drag one onto the page.
-                  Drag a piece on the page to move it, or onto the button to
-                  remove it. Hold the button to come back here.
-                </Text>
-                <View style={styles.row}>
-                  {buttonOn ? (
-                    <>
-                      <Button
-                        label="Back to the note"
-                        primary
-                        onPress={close}
-                      />
-                      <Button label="Hide the button" onPress={hide} />
-                    </>
-                  ) : (
-                    <Button
-                      label="Show the button"
-                      primary
-                      disabled={permission === null}
-                      onPress={showButton}
-                    />
-                  )}
-                </View>
-              </>
+              <Toggle
+                value={buttonOn}
+                onValueChange={toggleButton}
+                accessibilityLabel="Floating button"
+              />
+            </View>
+            {buttonOn && (
+              <ButtonStatus
+                permission={permission}
+                problem={problem}
+                onCheckAgain={refresh}
+              />
             )}
           </Section>
 
@@ -295,14 +260,11 @@ export default function App(): React.JSX.Element {
             </View>
           </Section>
 
-          <Section title="Save the layout">
+          <Section title="Save this page">
             <Text style={styles.para}>
-              {pieceCount > 0
-                ? `Saves where the ${plural(
-                    pieceCount,
-                    'piece',
-                  )} on this page are, under a name, to load onto any page later. The drawing isn't saved.`
-                : 'Put some pieces on the page, then save where they are under a name to load onto any page later.'}
+              Saves the whole page, background, drawing and pieces, under a
+              name: a drill you'll run again, or a base to start from. The menu
+              closes while it saves.
             </Text>
             <View style={styles.row}>
               <TextInput
@@ -318,11 +280,10 @@ export default function App(): React.JSX.Element {
               <Button
                 label="Save"
                 primary
-                disabled={pieceCount === 0 || !name.trim()}
+                disabled={files !== true || !name.trim()}
                 onPress={save}
               />
             </View>
-            {notice && <Text style={styles.notice}>{notice}</Text>}
           </Section>
 
           <Section title="Saved layouts">
@@ -333,8 +294,9 @@ export default function App(): React.JSX.Element {
             ) : (
               <>
                 <Text style={[styles.para, styles.dim]}>
-                  Loading replaces the pieces on the page you're on. Your
-                  drawing stays.
+                  New page adds a copy after the page you're on. Pieces here
+                  swaps the pieces on this page for the saved ones and keeps
+                  your drawing.
                 </Text>
                 {layouts.map(l => (
                   <View key={l.id} style={styles.layout}>
@@ -343,20 +305,36 @@ export default function App(): React.JSX.Element {
                         {l.name}
                       </Text>
                       <Text style={styles.layoutMeta}>
-                        {plural(l.pieces.length, 'piece')} · {dateOf(l.savedAt)}
+                        {describe(l)} · {dateOf(l.savedAt)}
                       </Text>
                     </View>
-                    <Button
-                      label="Load"
-                      primary
-                      onPress={() =>
-                        closePanelThen(() => loadLayoutHere(l.name, l.pieces))
-                      }
-                    />
-                    <Button
-                      label={confirmDelete === l.id ? 'Delete?' : 'Delete'}
-                      onPress={() => remove(l.id)}
-                    />
+                    <View style={styles.row}>
+                      {l.libPage !== undefined && (
+                        <Button
+                          label="New page"
+                          primary
+                          disabled={files !== true}
+                          onPress={() =>
+                            closePanelThen(() => loadLayoutAsPage(l))
+                          }
+                        />
+                      )}
+                      {l.pieces.length > 0 && (
+                        <Button
+                          label="Pieces here"
+                          primary={l.libPage === undefined}
+                          onPress={() =>
+                            closePanelThen(() =>
+                              loadLayoutHere(l.name, l.pieces),
+                            )
+                          }
+                        />
+                      )}
+                      <Button
+                        label={confirmDelete === l.id ? 'Delete?' : 'Delete'}
+                        onPress={() => remove(l.id)}
+                      />
+                    </View>
                   </View>
                 ))}
               </>
@@ -366,7 +344,7 @@ export default function App(): React.JSX.Element {
           <Section title="Pitch pages">
             <Text style={styles.para}>
               {pitch === 'ready'
-                ? 'Add a page with a blank pitch after this one.'
+                ? 'Adds a new page after this one with a blank pitch as its background, goals at the top and bottom, and goes to it.'
                 : pitch === 'failed'
                 ? "The pitch background couldn't be prepared. Close and reopen Soccer Board to try again."
                 : pitch === 'blocked'
@@ -396,6 +374,92 @@ export default function App(): React.JSX.Element {
         </ScrollView>
       </View>
     </View>
+  );
+}
+
+/** What a saved layout holds, in a few words. */
+function describe(l: SavedLayout): string {
+  const pieces = plural(l.pieces.length, 'piece');
+  if (l.libPage === undefined) {
+    return `${pieces} only`;
+  }
+  if (l.pieces.length === 0) {
+    return l.marks ? 'Page with drawing' : 'Blank page';
+  }
+  return l.marks ? `Page with ${pieces} and drawing` : `Page with ${pieces}`;
+}
+
+/** Whether the button can come up, and what to do if not. */
+function ButtonStatus({
+  permission,
+  problem,
+  onCheckAgain,
+}: {
+  permission: boolean | null;
+  problem: ButtonProblem | null;
+  onCheckAgain: () => void;
+}) {
+  if (!palette.available) {
+    return (
+      <Text style={[styles.para, styles.strong]}>
+        This build of the plugin is missing the button's native code. Rebuild it
+        with npm run build:plugin and look for a Gradle error in the build
+        output: without one, the .snplg holds an app.npk.
+      </Text>
+    );
+  }
+  if (permission === false) {
+    return (
+      <>
+        <Text style={[styles.para, styles.strong]}>
+          Android isn't letting the Supernote plugin host display over other
+          apps. Allow it on the next screen, then come back and check again.
+        </Text>
+        <View style={styles.row}>
+          <Button
+            label="Open settings"
+            primary
+            onPress={() => palette.requestOverlayPermission()}
+          />
+          <Button label="Check again" onPress={onCheckAgain} />
+        </View>
+      </>
+    );
+  }
+  if (problem === 'failed') {
+    return (
+      <Text style={[styles.para, styles.strong]}>
+        The button couldn't be shown last time: {lastButtonError()}
+      </Text>
+    );
+  }
+  return (
+    <Text style={[styles.para, styles.dim]}>
+      It appears when you close this menu.
+    </Text>
+  );
+}
+
+/** An on/off switch, drawn for e-ink: black when on. */
+function Toggle({
+  value,
+  onValueChange,
+  accessibilityLabel,
+}: {
+  value: boolean;
+  onValueChange: (v: boolean) => void;
+  accessibilityLabel: string;
+}) {
+  return (
+    <Pressable
+      onPress={() => onValueChange(!value)}
+      accessibilityRole="switch"
+      accessibilityState={{checked: value}}
+      accessibilityLabel={accessibilityLabel}
+      hitSlop={10}
+      style={[styles.track, value ? styles.trackOn : styles.trackOff]}>
+      <View style={[styles.thumb, value ? styles.thumbOn : styles.thumbOff]} />
+    </Pressable>
   );
 }
 
@@ -487,7 +551,24 @@ const styles = StyleSheet.create({
   },
   para: {fontSize: 18, lineHeight: 27, color: INK},
   dim: {color: DIM},
-  notice: {fontSize: 18, color: INK, fontWeight: 'bold'},
+  strong: {fontWeight: 'bold'},
+
+  setting: {flexDirection: 'row', alignItems: 'center', gap: 20},
+  settingText: {flex: 1},
+  track: {
+    width: 68,
+    height: 38,
+    borderRadius: 19,
+    borderWidth: 3,
+    borderColor: INK,
+    padding: 3,
+    justifyContent: 'center',
+  },
+  trackOn: {backgroundColor: INK},
+  trackOff: {backgroundColor: PAPER},
+  thumb: {width: 26, height: 26, borderRadius: 13},
+  thumbOn: {alignSelf: 'flex-end', backgroundColor: PAPER},
+  thumbOff: {alignSelf: 'flex-start', backgroundColor: INK},
 
   section: {gap: 12, borderTopWidth: 2, borderTopColor: INK, paddingTop: 16},
   sectionTitle: {fontSize: 20, fontWeight: 'bold', color: INK},
@@ -507,14 +588,12 @@ const styles = StyleSheet.create({
   },
 
   layout: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingVertical: 10,
+    gap: 10,
+    paddingVertical: 12,
     borderBottomWidth: 1,
     borderBottomColor: NET,
   },
-  layoutText: {flex: 1, minWidth: 0},
+  layoutText: {minWidth: 0},
   layoutName: {fontSize: 19, fontWeight: 'bold', color: INK},
   layoutMeta: {fontSize: 15, color: DIM, marginTop: 2},
 

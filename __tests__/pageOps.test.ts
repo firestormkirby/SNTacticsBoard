@@ -129,8 +129,7 @@ describe('pages', () => {
     await expect(addPitchPage(ctx)).rejects.toBeInstanceOf(NoPitchError);
 
     mockNote.state.files.add(await pitchPngPath(ctx.pageSize));
-    const page = await addPitchPage(ctx);
-    expect(page).toBe(1);
+    expect(await addPitchPage(ctx)).toEqual({page: 1, jumped: true});
     expect(mockNote.state.current).toBe(1);
     expect(mockNote.state.pages[1].template).toMatch(/pitch-1404x1872\.png$/);
     expect(mockNote.state.pages[1].layers.map(l => l.name)).toContain('Pieces');
@@ -152,8 +151,7 @@ describe('pages', () => {
     });
     const piece = await placePiece(ctx, 'defender', {x: 400, y: 400});
 
-    const page = await copyPage(ctx);
-    expect(page).toBe(1);
+    expect(await copyPage(ctx)).toEqual({page: 1, jumped: true});
     expect(mockNote.state.current).toBe(1);
     expect(mockNote.state.pages[1].template).toMatch(/page-\d{8}-\d{6}\.png$/);
     expect(mockNote.state.pages[1].elements.length).toBe(
@@ -165,6 +163,14 @@ describe('pages', () => {
     await movePiece(copyCtx, piece.id, {x: 800, y: 800});
     expect((await readPieces(copyCtx))[0]).toMatchObject({x: 800, y: 800});
     expect((await readPieces(ctx))[0]).toMatchObject({x: 400, y: 400});
+  });
+
+  it("still adds the page on firmware that can't jump to it", async () => {
+    mockNote = createFakeNote({noJump: true});
+    const ctx = await getContext();
+    expect(await copyPage(ctx)).toEqual({page: 1, jumped: false});
+    expect(mockNote.state.pages).toHaveLength(2);
+    expect(mockNote.state.current).toBe(0);
   });
 
   it('refuses a file that is not a note', async () => {

@@ -465,7 +465,9 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
 
     @ReactMethod
     fun canDrawOverlays(promise: Promise) {
-        promise.resolve(Settings.canDrawOverlays(ctx))
+        val ok = Settings.canDrawOverlays(ctx)
+        Log.i(TAG, "canDrawOverlays = $ok (package ${ctx.packageName})")
+        promise.resolve(ok)
     }
 
     @ReactMethod
@@ -501,6 +503,7 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
         main.post {
             try {
                 if (!Settings.canDrawOverlays(ctx)) {
+                    Log.w(TAG, "show: no overlay permission for ${ctx.packageName}")
                     promise.resolve(false)
                     return@post
                 }
@@ -508,7 +511,9 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
                 val m = metrics()
                 if (button == null) {
                     sweepOrphans()
-                    val size = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, BUTTON_SP, m).toInt()
+                    val size = TypedValue.applyDimension(
+                        TypedValue.COMPLEX_UNIT_SP, BUTTON_SP, ctx.resources.displayMetrics,
+                    ).toInt()
                     val v = BubbleView(ctx) { open }
                     attachButtonTouches(v)
                     val p = params(size, size, true)
@@ -526,10 +531,13 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
                 update(button, p)
                 setOpen(if (options.hasKey("open")) options.getBoolean("open") else open)
                 placeTiles()
+                Log.i(TAG, "show: button at ${p.x},${p.y} size ${p.width}, palette open=$open")
                 promise.resolve(true)
-            } catch (e: Exception) {
-                Log.e(TAG, "show: ${e.message}", e)
-                promise.reject("show_failed", e)
+            } catch (e: Throwable) {
+                // Throwable, not Exception: a class that fails to load is an
+                // Error, and the menu should hear about that too.
+                Log.e(TAG, "show: $e", e)
+                promise.reject("show_failed", e.toString(), e)
             }
         }
     }

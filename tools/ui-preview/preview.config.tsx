@@ -13,7 +13,7 @@
  */
 import type { PreviewConfig, Scenario } from './src/config';
 import App from '../../App';
-import { handle, startPaletteController } from '../../src/palette/controller';
+import { handle, saveThisPage, startPaletteController } from '../../src/palette/controller';
 import PaletteOverlay, { setPaletteState } from './soccer/WebPalette';
 import { RONDO, preparePitchImage, seedDrill } from './soccer/seed';
 
@@ -21,11 +21,11 @@ import { RONDO, preparePitchImage, seedDrill } from './soccer/seed';
 const BUTTON_ON = { 'snsoccer:palette:v2': { visible: true, x: null, y: null, open: true } };
 
 const DAY = 24 * 60 * 60 * 1000;
+/** A layout saved before whole pages were: pieces only. */
 const SAVED = (() => {
   const now = Date.UTC(2026, 8, 28, 17);
   const pieces = (list: typeof RONDO) => list.map(([kind, x, y]) => ({ kind, x, y }));
   return [
-    { id: 'l1', name: 'Rondo 4v2', savedAt: now - DAY, pieces: pieces(RONDO) },
     {
       id: 'l2', name: 'Shooting, 2 lines', savedAt: now - 3 * DAY,
       pieces: pieces([
@@ -41,7 +41,8 @@ const setups: Record<string, () => Promise<void> | void> = {
   drill: seedDrill,
   menu: async () => {
     await seedDrill();
-    // The button has been up on this page, so the menu knows its pieces.
+    // Saved with the plugin's own code, so the layouts note is real.
+    await saveThisPage('Rondo 4v2');
     await handle({ type: 'tick' });
   },
   'blank-note': async () => {
@@ -95,7 +96,7 @@ const config: PreviewConfig = {
     {
       id: 'menu',
       label: 'The menu',
-      note: 'What holding the button opens: copy the page, save the pieces as a named layout, load a saved one.',
+      note: 'What holding the button opens. Save this page under a name; add a saved one as a new page, or put just its pieces here.',
       storage: {
         ...BUTTON_ON,
         'snsoccer:layouts:v1': SAVED,
@@ -104,12 +105,12 @@ const config: PreviewConfig = {
     {
       id: 'first-run',
       label: 'First run',
-      note: 'The menu before the button is allowed. Allow it, then show the button.',
+      note: 'The menu before Android allows the button. Switch it on, allow it, then close the menu.',
     },
     {
       id: 'palette-ready',
       label: 'Button allowed',
-      note: 'Permission granted: Show the button returns to the note with it up.',
+      note: 'Switch the button on and close the menu: it comes up over the note.',
     },
     {
       id: 'blank-note',

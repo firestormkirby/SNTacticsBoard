@@ -6,7 +6,9 @@
  * open; most of the time it isn't. Two host rules shape it:
  *
  *  - SDK calls can deadlock while the panel is open, so nothing here touches
- *    the note then. The panel tells us when it opens and closes.
+ *    the note then. The host's plugin_life events say when it opens (start)
+ *    and when the host closes it (stop); our own closes go through
+ *    closePanelThen, since the host sends no stop for those.
  *  - With the panel closed the host suspends JS timers. The native module
  *    emits a "tick" every second instead, which is how a page turn is noticed
  *    and the handles follow it.
@@ -17,20 +19,31 @@
 import {ToastAndroid} from 'react-native';
 import {PluginCommAPI, PluginManager} from 'sn-plugin-lib';
 
-import {LayoutPiece} from '../layouts/layoutStore';
+import {
+  LayoutPiece,
+  SavedLayout,
+  libraryPageGone,
+  pendingRemovals,
+  queueRemoval,
+  saveLayout,
+} from '../layouts/layoutStore';
 import {
   NoPitchError,
+  NewPage,
   NotANoteError,
   PageContext,
   PagePiece,
   addPitchPage,
   copyPage,
   getContext,
+  loadFromLibrary,
   movePiece,
   placePiece,
   readPieces,
+  removeFromLibrary,
   removePiece,
   replacePieces,
+  saveToLibrary,
 } from '../page/pageOps';
 import {PieceKind, Point, pieceSizeFor} from '../page/pieceShapes';
 import {PaletteEvent, ScreenPoint, onPaletteEvent, palette} from './bridge';
@@ -143,8 +156,38 @@ async function followPage(): Promise<void> {
 
 // ── Showing the button ──────────────────────────────────────────────────────
 
-/** Put the button up where it was left. Resolves false without permission. */
+/**
+ * What happened the last time the button was asked to come up, for the menu
+ * to report. On a device there is no other way to tell "not in this build"
+ * from "not allowed" from "failed".
+ */
+export type ButtonProblem =
+  | 'no-native' // app.npk without the SoccerPalette package
+  | 'no-permission' // "Display over other apps" not allowed for the host
+  | 'failed'; // the native show threw; see lastButtonError()
+
+let problem: ButtonProblem | null = null;
+let problemDetail = '';
+
+export function buttonProblem(): ButtonProblem | null {
+  return problem;
+}
+
+export function lastButtonError(): string {
+  return problemDetail;
+}
+
+function log(...args: unknown[]) {
+  console.log('[snsoccer]', ...args);
+}
+
+/** Put the button up where it was left. Resolves false if it can't be. */
 export async function showButton(): Promise<boolean> {
+  if (!palette.available) {
+    problem = 'no-native';
+    log('button: the SoccerPalette native module is not in this build');
+    return false;
+  }
   const s = await loadPaletteSettings();
   const screen = await palette.getScreenInfo();
   // The panel opened while this was loading (index.js starts the controller
@@ -153,13 +196,21 @@ export async function showButton(): Promise<boolean> {
   if (panelOpen) {
     return false;
   }
-  const shownOk = await palette.show({
-    open: s.open,
-    pieceSize: pieceSizeFor(screen?.width ?? 1404),
-    ...(s.x !== null && s.y !== null ? {x: s.x, y: s.y} : {}),
-  });
+  let shownOk = false;
+  try {
+    shownOk = await palette.show({
+      open: s.open,
+      pieceSize: pieceSizeFor(screen?.width ?? 1404),
+      ...(s.x !== null && s.y !== null ? {x: s.x, y: s.y} : {}),
+    });
+    problem = shownOk ? null : 'no-permission';
+    problemDetail = '';
+  } catch (e) {
+    problem = 'failed';
+    problemDetail = (e as Error)?.message ?? String(e);
+  }
+  log('button: show ->', shownOk, problem ?? '', problemDetail);
   if (shownOk) {
-    await updatePaletteSettings({visible: true});
     shown = null; // lay the handles out afresh on the next tick
     if (!panelOpen) {
       palette.startTicking(TICK_MS);
@@ -168,11 +219,15 @@ export async function showButton(): Promise<boolean> {
   return shownOk;
 }
 
-export async function hideButton(): Promise<void> {
-  palette.stopTicking();
-  palette.hide();
-  shown = null;
-  await updatePaletteSettings({visible: false});
+/** The menu's toggle. On: the button comes up when the menu closes. */
+export async function setButtonOn(on: boolean): Promise<void> {
+  await updatePaletteSettings({visible: on});
+  if (!on) {
+    palette.stopTicking();
+    palette.hide();
+    shown = null;
+    problem = null;
+  }
 }
 
 /**
@@ -180,13 +235,33 @@ export async function hideButton(): Promise<void> {
  * panel) and stop ticking, since reading the note now can deadlock.
  */
 export function panelOpened(): void {
+  if (!panelOpen) {
+    log('menu open');
+  }
   panelOpen = true;
   palette.stopTicking();
   palette.hide();
+  for (const fn of openListeners) {
+    fn();
+  }
+}
+
+const openListeners = new Set<() => void>();
+
+/**
+ * Called each time the menu opens. The menu's React tree stays mounted
+ * between openings, so its mount effect only sees the first.
+ */
+export function onMenuOpen(fn: () => void): () => void {
+  openListeners.add(fn);
+  return () => {
+    openListeners.delete(fn);
+  };
 }
 
 /** The panel has closed: bring the button back if it was on. */
 export async function panelClosed(): Promise<void> {
+  log('menu closed');
   panelOpen = false;
   if ((await loadPaletteSettings()).visible) {
     await showButton();
@@ -196,29 +271,97 @@ export async function panelClosed(): Promise<void> {
 /**
  * Close the panel, then do some note work. The work waits for the close
  * because SDK calls can deadlock while the panel is open.
+ *
+ * The button goes up first, while the panel is still open, as Modulanner's
+ * does: an overlay added after closePluginView() may not get drawn before
+ * the host puts the plugin in the background. Capped, so a slow show can't
+ * keep the menu open.
  */
-export function closePanelThen(work: () => Promise<string | void>): void {
+export async function closePanelThen(
+  work: () => Promise<string | void>,
+): Promise<void> {
   panelOpen = false;
+  await Promise.race([
+    panelClosed().catch(e => log('button: could not come up', e)),
+    new Promise(done => setTimeout(done, 1500)),
+  ]);
   PluginManager.closePluginView();
+  afterClose();
   enqueue(async () => {
     const message = await work();
-    await panelClosed();
     if (message) {
       toast(message);
     }
   });
 }
 
+/** Note work that waits for the panel to be closed, whoever closed it. */
+function afterClose(): void {
+  enqueue(removeDeletedPages, true);
+}
+
+/** Remove the layouts-note pages of layouts deleted in the menu. */
+async function removeDeletedPages(): Promise<void> {
+  for (const libPage of await pendingRemovals()) {
+    let removed = false;
+    try {
+      removed = await removeFromLibrary(libPage);
+    } catch (e) {
+      log('layouts: could not remove page', libPage, e);
+    }
+    await libraryPageGone(libPage, removed);
+  }
+}
+
 // ── Menu actions, run after the panel closes ────────────────────────────────
 
+/** "Page 4.", or how to get there when this firmware can't jump. */
+function landedOn(p: NewPage): string {
+  return p.jumped
+    ? `page ${p.page + 1}.`
+    : `page ${p.page + 1}, after this one. Turn the page to see it.`;
+}
+
 export async function copyThisPage(): Promise<string> {
-  const page = await copyPage(await getContext());
-  return `Copied to page ${page + 1}.`;
+  return `Copied to ${landedOn(await copyPage(await getContext()))}`;
 }
 
 export async function addPitch(): Promise<string> {
-  const page = await addPitchPage(await getContext());
-  return `Pitch added as page ${page + 1}.`;
+  return `Pitch added as ${landedOn(await addPitchPage(await getContext()))}`;
+}
+
+/** Save this whole page as a layout, under a name. */
+export async function saveThisPage(name: string): Promise<string> {
+  const ctx = await getContext();
+  const now = Date.now();
+  const saved = await saveToLibrary(
+    ctx,
+    now.toString(36) + Math.random().toString(36).slice(2, 6),
+  );
+  const {layout, replaced} = await saveLayout(
+    name,
+    saved.pieces,
+    ctx.pageSize,
+    now,
+    {libPage: saved.libPage, background: saved.background, marks: saved.marks},
+  );
+  if (replaced?.libPage !== undefined) {
+    await queueRemoval(replaced.libPage);
+    await removeDeletedPages();
+  }
+  return `Saved "${layout.name}".`;
+}
+
+/** Add a saved layout's page after this one. */
+export async function loadLayoutAsPage(layout: SavedLayout): Promise<string> {
+  if (layout.libPage === undefined || !layout.background) {
+    throw new Error(
+      `"${layout.name}" was saved before whole pages were: it has pieces only.`,
+    );
+  }
+  const ctx = await getContext();
+  const p = await loadFromLibrary(ctx, layout.libPage, layout.background);
+  return `"${layout.name}" added as ${landedOn(p)}`;
 }
 
 export async function loadLayoutHere(
@@ -325,6 +468,9 @@ function enqueue(work: () => Promise<void>, quiet = false): void {
 }
 
 let stop: (() => void) | null = null;
+/** sn-plugin-lib's PluginLifeType. */
+const LIFE_START = 2;
+const LIFE_STOP = 3;
 let busyTicks = 0;
 
 /** Start listening to the button, and bring it back if it was left on. */
@@ -332,7 +478,21 @@ export function startPaletteController(): void {
   if (stop) {
     return;
   }
-  stop = onPaletteEvent(event => {
+  // The host's word on the panel: start when it opens, from the toolbar or
+  // anywhere else, and stop when the host closes it (not for our own
+  // closePluginView). App.tsx only mounts once per plugin load, so it can't
+  // be the signal for a second opening.
+  const life = (PluginManager as any).registerPluginLifeListener?.({
+    onMsg(data: {state?: number} | undefined) {
+      if (data?.state === LIFE_START) {
+        panelOpened();
+      } else if (data?.state === LIFE_STOP) {
+        panelClosed().catch(e => log('button: could not come up', e));
+        afterClose();
+      }
+    },
+  });
+  const events = onPaletteEvent(event => {
     // A tick that finds the last one still running just skips: they are only
     // a check, and piling them up would lag every real edit behind them.
     if (event.type === 'tick' && busyTicks > 0) {
@@ -351,6 +511,10 @@ export function startPaletteController(): void {
     }
     enqueue(() => handle(event));
   });
+  stop = () => {
+    events();
+    life?.remove?.();
+  };
   loadPaletteSettings()
     .then(s => (s.visible && !panelOpen ? showButton() : false))
     .catch(() => {});
@@ -364,4 +528,6 @@ export function stopPaletteController(): void {
   shown = null;
   current = null;
   busyTicks = 0;
+  problem = null;
+  problemDetail = '';
 }

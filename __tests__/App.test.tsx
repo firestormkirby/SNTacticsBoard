@@ -22,6 +22,7 @@ NativeModules.SoccerPalette = {
 
 import App from '../App';
 import {saveLayout} from '../src/layouts/layoutStore';
+import {loadPaletteSettings} from '../src/palette/settings';
 
 const text = (root: ReactTestRenderer.ReactTestRenderer) =>
   JSON.stringify(root.toJSON());
@@ -45,11 +46,31 @@ beforeEach(async () => {
   jest.clearAllMocks();
 });
 
-it('asks for the overlay permission before the button can show', async () => {
+it('switches the button on and off with a toggle', async () => {
+  NativeModules.SoccerPalette.canDrawOverlays.mockResolvedValue(true);
   const root = await mount();
-  expect(text(root)).toContain('Allow the button');
+  const toggle = () => button(root, 'Floating button');
+  expect(toggle().props.accessibilityState).toEqual({checked: false});
+
+  await ReactTestRenderer.act(async () => toggle().props.onPress());
+  expect(toggle().props.accessibilityState).toEqual({checked: true});
+  expect((await loadPaletteSettings()).visible).toBe(true);
+  expect(text(root)).toContain('It appears when you close this menu.');
+
+  await ReactTestRenderer.act(async () => toggle().props.onPress());
+  expect((await loadPaletteSettings()).visible).toBe(false);
+  expect(NativeModules.SoccerPalette.hide).toHaveBeenCalled();
+});
+
+it("says so when Android won't let the button show", async () => {
+  NativeModules.SoccerPalette.canDrawOverlays.mockResolvedValue(false);
+  const root = await mount();
   await ReactTestRenderer.act(async () =>
-    button(root, 'Allow the button').props.onPress(),
+    button(root, 'Floating button').props.onPress(),
+  );
+  expect(text(root)).toContain('display over other');
+  await ReactTestRenderer.act(async () =>
+    button(root, 'Open settings').props.onPress(),
   );
   expect(
     NativeModules.SoccerPalette.requestOverlayPermission,
@@ -58,27 +79,36 @@ it('asks for the overlay permission before the button can show', async () => {
 
 it('offers both exports and lists saved layouts', async () => {
   NativeModules.SoccerPalette.canDrawOverlays.mockResolvedValue(true);
-  await saveLayout('Rondo 4v2', [{kind: 'cone', x: 10, y: 10}], {
-    width: 1404,
-    height: 1872,
+  const size = {width: 1404, height: 1872};
+  await saveLayout('Old pieces', [{kind: 'cone', x: 10, y: 10}], size, 1);
+  await saveLayout('Rondo 4v2', [{kind: 'ball', x: 9, y: 9}], size, 2, {
+    libPage: 0,
+    background: 'bg.png',
+    marks: 12,
   });
   const root = await mount();
   const t = text(root);
-  expect(t).toContain('Show the button');
   expect(t).toContain('Copy to a new page');
-  expect(t).toContain('Save the layout');
-  expect(t).toContain('Rondo 4v2');
-  expect(t).toContain('1 piece');
-  // Nothing on the page yet, so there is nothing to save.
-  expect(button(root, 'Save').props.disabled).toBe(true);
-});
+  expect(t).toContain('Save this page');
+  expect(t).toContain('Page with 1 piece and drawing');
+  expect(t).toContain('1 piece only');
+  const count = (label: string) =>
+    t.split(`"accessibilityLabel":"${label}"`).length - 1;
+  expect(count('New page')).toBe(1);
+  expect(count('Pieces here')).toBe(2);
 
-it('shows the button by closing the menu', async () => {
-  NativeModules.SoccerPalette.canDrawOverlays.mockResolvedValue(true);
-  const root = await mount();
+  // Save needs a name, then closes the menu to read the page.
+  expect(button(root, 'Save').props.disabled).toBe(true);
   await ReactTestRenderer.act(async () =>
-    button(root, 'Show the button').props.onPress(),
+    root.root
+      .find(
+        n =>
+          n.props.accessibilityLabel === 'Layout name' && n.props.onChangeText,
+      )
+      .props.onChangeText('Warm-up'),
   );
+  expect(button(root, 'Save').props.disabled).toBe(false);
+  await ReactTestRenderer.act(async () => button(root, 'Save').props.onPress());
   const {PluginManager} = require('sn-plugin-lib');
   expect(PluginManager.closePluginView).toHaveBeenCalled();
 });

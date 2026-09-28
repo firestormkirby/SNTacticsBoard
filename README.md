@@ -9,8 +9,9 @@ button that stays out of the way while you write.
 ## How it works
 
 - **The floating button** is a small round chip over the note, like
-  Modulanner's. The pen keeps writing everywhere around it. There is nothing
-  to switch on or off:
+  Modulanner's, switched on with the toggle at the top of the menu. It comes
+  up when the menu closes. The pen keeps writing everywhere around it, and
+  there's no mode to switch:
 
   | On the button | What it does |
   |---|---|
@@ -32,17 +33,26 @@ button that stays out of the way while you write.
 
   | Section | What it does |
   |---|---|
+  | Floating button | The on/off toggle. Below it, what's stopping the button if something is: a build without its native code, or Android not allowing the plugin host to display over other apps (with a button to that setting). |
   | Copy this page | Copies the page, background, drawing and pieces, to a new page after it, all still editable. Good for drill progressions. |
-  | Save the layout | Saves where the pieces on this page are, under a name. Only the pieces, not the drawing. Saving under an existing name replaces it. |
-  | Saved layouts | Loads a saved layout onto the page you're on, in place of its pieces; your drawing stays. Positions are kept as fractions of the page, so a layout saved on a Manta loads in the same places on an A5X. |
-  | Pitch pages | Adds a page after this one with a regulation pitch as its background, goals at the top and bottom. Pieces can go on any page, not just pitch pages. |
-  | Floating button | Allows it (Android's "Display over other apps", granted to the plugin host), shows it or hides it. |
+  | Save this page | Saves the whole page, background, drawing and pieces, under a name. A drawing with no pieces is fine: a base to start from. Saving under an existing name replaces it. |
+  | Saved layouts | **New page** adds a copy of the saved page after the one you're on. **Pieces here** swaps the pieces on this page for the saved ones and keeps your drawing; piece positions are kept as fractions of the page, so they land in the same places on any device. |
+  | Pitch pages | Adds a page after this one with a regulation pitch as its background, goals at the top and bottom, and goes to it. Pieces can go on any page, not just pitch pages. |
+
+  New pages come after the one you're on. Where the firmware can't go to a
+  page by itself (`jumpToPage` arrived with the 2026-08-24 plugin firmware),
+  the message says which page it is so you can turn to it.
+
+- **Saved layouts live in a note**, `EXPORT/SNSoccer/Layouts.note`, one page
+  per layout, copied in and out the way Copy page copies. Opening it to look
+  is fine, but leave its pages in order: the list in the menu points at them
+  by position.
 
   The first time it opens, the menu draws the pitch background.
 
 - **Permissions.** Soccer Board declares `plugin.permission.FILE:READ` and
   `FILE:WRITE` in `PluginConfig.json`, because it saves the pitch background
-  and page copies in `EXPORT/SNSoccer/`. The menu asks for them when it
+  page copies and the layouts note in `EXPORT/SNSoccer/`. The menu asks for them when it
   opens; choose **Always allow**, since "this time only" lapses when the
   plugin closes. Without them, Copy and Pitch pages are held back and the menu
   offers to ask again. Placing, moving and saving layouts don't need them. The
@@ -57,8 +67,8 @@ button that stays out of the way while you write.
 | `App.tsx` | The menu: copy, layouts, pitch pages, button setup, pitch preparation |
 | `android/.../palette/` | The button, palette and piece handles in Kotlin, each a small system overlay window (`SoccerPaletteModule`, registered in `MainApplication`) |
 | `src/palette/controller.ts` | Turns button events into page edits, one at a time, and keeps the handles on the page showing |
-| `src/layouts/layoutStore.ts` | Named layouts in AsyncStorage |
-| `src/page/pageOps.ts` | Place, move, remove and replace pieces; copy a page; add a pitch page |
+| `src/layouts/layoutStore.ts` | The saved-layouts list in AsyncStorage; the pages themselves are in the layouts note |
+| `src/page/pageOps.ts` | Place, move, remove and replace pieces; copy a page; add a pitch page; save to and load from the layouts note |
 | `src/page/pieceShapes.ts` | Each piece as note geometry, and the `userData` tag that identifies it |
 | `src/page/capture.ts`, `src/components/PitchSheet.tsx` | Drawing and saving the pitch background |
 
@@ -81,7 +91,10 @@ The page work follows what the Modulanner plugin established on devices:
 
 - Every page edit runs with the menu **closed**, because SDK calls can
   deadlock while it's open. The button and handles come down while the menu
-  is open and back when it closes. Saving a layout uses the pieces the
+  is open and back when it closes. The host's `plugin_life` events say when
+  the menu opens (`start`) and when the host closes it (`stop`); for the
+  plugin's own close there's no event, so the button is put back up just
+  before `closePluginView()`, as Modulanner's is. Saving a layout uses the pieces the
   controller last read, since the menu can't read the note itself.
 - `saveCurrentNote()` runs before a page is inserted, or strokes still on
   screen are lost.
@@ -157,10 +170,25 @@ The Kotlin was compiled against the Android framework and React Native
 
 ## To check on the first device install
 
-- **The button appears** after allowing "Display over other apps" for the
-  plugin host, and stays over the note after the menu closes. Check whether
-  it lingers over other apps after leaving the note; if it does, Hide the
-  button in the menu puts it away.
+- **The button appears** when the toggle is on and the menu closes, and
+  stays over the note. If it doesn't, the menu says why under the toggle next
+  time it opens; for the full story, capture the log while switching it on and
+  closing the menu:
+
+  ```bash
+  adb logcat -c
+  # switch the button on, close the menu, wait a few seconds
+  adb logcat -d -s SoccerPalette:V ReactNativeJS:V
+  ```
+
+  `SoccerPalette` lines come from the native side (`canDrawOverlays`,
+  `show: button at …`); `[snsoccer]` lines from the JS side (`menu open`,
+  `menu closed`, `button: show -> …`). If neither appears, the build is
+  missing the native module: check that the built `PluginConfig.json` lists
+  `com.snsoccer.palette.SoccerPalettePackage` in `reactPackages` and the
+  `.snplg` holds an `app.npk`.
+- **Saved layouts.** Save a page, check `EXPORT/SNSoccer/Layouts.note` gets a
+  page (`createNote` makes it the first time), then New page brings it back.
 - **File permission.** The menu's first open should show the host's
   permission dialog for file access. After "Always allow", Copy page and Add
   a pitch page should work from the background once the menu closes. Check

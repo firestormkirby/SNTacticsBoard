@@ -1,6 +1,7 @@
 /**
  * Everything the plugin does to a note page: place, move and remove pieces,
- * copy a page, and add a pitch page.
+ * copy a page, add a pitch page, and save pages to and load them from the
+ * layouts note.
  *
  * All of it runs with the plugin panel CLOSED (state 0), driven by events from
  * the floating palette. That is where Modulanner does its page work on
@@ -415,6 +416,31 @@ async function nextPageIndex(ctx: PageContext): Promise<number> {
   return Math.min(ctx.page + 1, total);
 }
 
+/**
+ * Go to a page of the open note, if this firmware can. jumpToPage arrived
+ * with the 2026-08-24 plugin firmware; older firmware lacks it or rejects,
+ * and Modulanner found no way to ask up front. So try, and report.
+ */
+export async function tryJumpToPage(page: number): Promise<boolean> {
+  try {
+    const jump = (PluginCommAPI as any).jumpToPage;
+    if (typeof jump !== 'function') {
+      return false;
+    }
+    const res = await jump.call(PluginCommAPI, page);
+    return res?.success !== false;
+  } catch (e) {
+    console.warn('[snsoccer] jumpToPage failed', e);
+    return false;
+  }
+}
+
+/** Where a new page ended up, and whether the note went to it. */
+export interface NewPage {
+  page: number;
+  jumped: boolean;
+}
+
 /** Give a page a Pieces layer. Best effort: pieces fall back to main. */
 async function addPiecesLayer(notePath: string, page: number): Promise<void> {
   try {
@@ -435,7 +461,7 @@ async function addPiecesLayer(notePath: string, page: number): Promise<void> {
 export class NoPitchError extends Error {}
 
 /** Add a page with the pitch as its background, after this one, and go to it. */
-export async function addPitchPage(ctx: PageContext): Promise<number> {
+export async function addPitchPage(ctx: PageContext): Promise<NewPage> {
   const png = await pitchPngPath(ctx.pageSize);
   if (!(await FileUtils.exists(png))) {
     throw new NoPitchError(
@@ -453,40 +479,40 @@ export async function addPitchPage(ctx: PageContext): Promise<number> {
     'insertNotePage',
   );
   await addPiecesLayer(ctx.notePath, page);
-  check(await PluginCommAPI.jumpToPage(page), 'jumpToPage');
-  return page;
+  return {page, jumped: await tryJumpToPage(page)};
+}
+
+/** The background of a page, rendered to a PNG that a new page can use. */
+async function backgroundOf(src: PageContext, name: string): Promise<string> {
+  const png = `${await exportDir()}/${name}.png`;
+  check(
+    await PluginFileAPI.generateNoteTemplatePng(src.notePath, src.page, png),
+    'generateNoteTemplatePng',
+  );
+  return png;
 }
 
 /**
- * Copy this page, background, drawings and pieces, to a new page after it,
- * and go there. Everything on the copy stays editable.
+ * Put a page's layers, drawing and pieces onto a page that already has its
+ * background, in the same or another note. The pieces stay pieces: their
+ * record goes with them, for firmware that drops userData. Resolves the
+ * pieces found and how many elements were copied.
  */
-export async function copyPage(ctx: PageContext): Promise<number> {
-  const pieces = await readPieces(ctx); // also saves the note
-  const bg = `${await exportDir()}/page-${timestamp()}.png`;
-  check(
-    await PluginFileAPI.generateNoteTemplatePng(ctx.notePath, ctx.page, bg),
-    'generateNoteTemplatePng',
-  );
-  const page = await nextPageIndex(ctx);
-  check(
-    await PluginFileAPI.insertNotePage({
-      notePath: ctx.notePath,
-      page,
-      template: bg,
-    }),
-    'insertNotePage',
-  );
-
+async function copyContents(
+  src: PageContext,
+  destPath: string,
+  destPage: number,
+): Promise<{pieces: PagePiece[]; count: number}> {
+  const pieces = await readPieces(src); // also saves the open note
   const layers = answer<Array<{layerId?: number}>>(
-    await PluginFileAPI.getLayers(ctx.notePath, ctx.page),
+    await PluginFileAPI.getLayers(src.notePath, src.page),
     'getLayers',
   );
   for (const layer of layers) {
     if (layer.layerId) {
       try {
         check(
-          await PluginFileAPI.insertLayer(ctx.notePath, page, layer),
+          await PluginFileAPI.insertLayer(destPath, destPage, layer),
           'insertLayer',
         );
       } catch (e) {
@@ -496,19 +522,167 @@ export async function copyPage(ctx: PageContext): Promise<number> {
   }
 
   const elements = answer<RawElement[]>(
-    await PluginFileAPI.getElements(ctx.page, ctx.notePath),
+    await PluginFileAPI.getElements(src.page, src.notePath),
     'getElements',
   );
-  if (elements.length > 0) {
-    check(
-      await PluginFileAPI.insertElements(ctx.notePath, page, elements),
-      'insertElements',
+  try {
+    if (elements.length > 0) {
+      check(
+        await PluginFileAPI.insertElements(destPath, destPage, elements),
+        'insertElements',
+      );
+    }
+  } finally {
+    for (const el of elements) {
+      el.recycle?.();
+    }
+  }
+  await saveRegistry({...src, notePath: destPath, page: destPage}, pieces);
+  return {pieces, count: elements.length};
+}
+
+/**
+ * Copy a page, background, drawing and pieces, to a new page inserted at
+ * `at` in `destPath`. Everything on the copy stays editable.
+ */
+async function copyPageTo(
+  src: PageContext,
+  destPath: string,
+  at: number,
+  background?: string,
+): Promise<void> {
+  const bg = background ?? (await backgroundOf(src, `page-${timestamp()}`));
+  check(
+    await PluginFileAPI.insertNotePage({
+      notePath: destPath,
+      page: at,
+      template: bg,
+    }),
+    'insertNotePage',
+  );
+  await copyContents(src, destPath, at);
+}
+
+/** Copy this page to a new page after it, and go there. */
+export async function copyPage(ctx: PageContext): Promise<NewPage> {
+  check(await PluginNoteAPI.saveCurrentNote(), 'saveCurrentNote');
+  const page = await nextPageIndex(ctx);
+  await copyPageTo(ctx, ctx.notePath, page);
+  return {page, jumped: await tryJumpToPage(page)};
+}
+
+// ── The layouts note ────────────────────────────────────────────────────────
+//
+// A saved layout is a whole page: background, drawing and pieces. Each is a
+// page of one note the plugin keeps, EXPORT/SNSoccer/Layouts.note, copied in
+// and out the way Copy page copies within a note (Modulanner copies ink
+// between notes the same way). Its pages line up with the saved list, so
+// it is best left to the plugin; opening it to look is fine.
+
+export const LIBRARY_NAME = 'Layouts.note';
+
+export async function libraryPath(): Promise<string> {
+  return `${await exportDir()}/${LIBRARY_NAME}`;
+}
+
+async function libraryPage(page: number): Promise<PageContext> {
+  const notePath = await libraryPath();
+  const pageSize = answer<{width: number; height: number}>(
+    await PluginFileAPI.getPageSize(notePath, page),
+    'getPageSize',
+  );
+  return {notePath, page, pageSize};
+}
+
+/** What saving a page to the layouts note made. */
+export interface SavedPage {
+  /** Its page in the layouts note. */
+  libPage: number;
+  /** Its background, to give a page it's loaded onto. */
+  background: string;
+  pieces: PieceTag[];
+  /** How many elements are drawing rather than pieces. */
+  marks: number;
+}
+
+/** Save this page, all of it, as a new page at the end of the layouts note. */
+export async function saveToLibrary(
+  ctx: PageContext,
+  id: string,
+): Promise<SavedPage> {
+  check(await PluginNoteAPI.saveCurrentNote(), 'saveCurrentNote');
+  const background = await backgroundOf(ctx, `layout-${id}`);
+  const lib = await libraryPath();
+
+  let libPage: number;
+  if (await FileUtils.exists(lib)) {
+    libPage = answer<number>(
+      await PluginFileAPI.getNoteTotalPageNum(lib),
+      'getNoteTotalPageNum',
     );
+    check(
+      await PluginFileAPI.insertNotePage({
+        notePath: lib,
+        page: libPage,
+        template: background,
+      }),
+      'insertNotePage',
+    );
+  } else {
+    // A new note starts with one page, on this background.
+    check(
+      await PluginFileAPI.createNote({
+        notePath: lib,
+        template: background,
+        mode: 0,
+        isPortrait: ctx.pageSize.width <= ctx.pageSize.height,
+      }),
+      'createNote',
+    );
+    libPage = 0;
   }
-  for (const el of elements) {
-    el.recycle?.();
+  const {pieces, count} = await copyContents(ctx, lib, libPage);
+  const pieceNums = pieces.reduce((n, p) => n + p.nums.length, 0);
+  return {
+    libPage,
+    background,
+    pieces: pieces.map(({kind, id: pid, x, y}) => ({kind, id: pid, x, y})),
+    marks: Math.max(0, count - pieceNums),
+  };
+}
+
+/** Add a saved page after this one, and go to it. */
+export async function loadFromLibrary(
+  ctx: PageContext,
+  libPage: number,
+  background: string,
+): Promise<NewPage> {
+  check(await PluginNoteAPI.saveCurrentNote(), 'saveCurrentNote');
+  const src = await libraryPage(libPage);
+  const page = await nextPageIndex(ctx);
+  const bg = (await FileUtils.exists(background))
+    ? background
+    : await backgroundOf(src, `layout-${timestamp()}`);
+  await copyPageTo(src, ctx.notePath, page, bg);
+  return {page, jumped: await tryJumpToPage(page)};
+}
+
+/**
+ * Take a page out of the layouts note. A note keeps at least one page, so
+ * the last one stays; it's simply no longer listed.
+ */
+export async function removeFromLibrary(libPage: number): Promise<boolean> {
+  const lib = await libraryPath();
+  if (!(await FileUtils.exists(lib))) {
+    return false;
   }
-  await saveRegistry({...ctx, page}, pieces);
-  check(await PluginCommAPI.jumpToPage(page), 'jumpToPage');
-  return page;
+  const total = answer<number>(
+    await PluginFileAPI.getNoteTotalPageNum(lib),
+    'getNoteTotalPageNum',
+  );
+  if (total <= 1 || libPage >= total) {
+    return false;
+  }
+  check(await PluginFileAPI.removeNotePage(lib, libPage), 'removeNotePage');
+  return true;
 }
