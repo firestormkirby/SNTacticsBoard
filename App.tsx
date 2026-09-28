@@ -1,59 +1,40 @@
 /**
- * Soccer Board: a coach's whiteboard for Supernote.
+ * Soccer Board: the panel opened from the Note toolbar.
  *
- * Drag X and O players, cones and balls from the tray onto the pitch, which
- * runs along the screen's long side in portrait and in landscape.
- * The board saves itself after every move. "Export to Note" adds the drill to
- * the open note as a new page with the diagram as its background, ready to
- * draw runs and passes over with the pen.
+ * The drawing happens on the note page itself, with the Supernote pen. The
+ * pieces come from the floating palette, a small native window that stays on
+ * screen while you write (android/.../palette): drag a piece off it with your
+ * finger and it lands on the page as real note shapes.
+ *
+ * This panel is for setup: switching the palette on (and granting the
+ * permission it needs), preparing the pitch background, and adding pitch
+ * pages.
  */
-import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
+import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {
   Dimensions,
-  LayoutChangeEvent,
   Pressable,
+  ScrollView,
   StatusBar,
   StyleSheet,
   Text,
+  ToastAndroid,
   View,
 } from 'react-native';
 import {PluginManager} from 'sn-plugin-lib';
 
-import {
-  BoardState,
-  EMPTY_BOARD,
-  dropPiece,
-  pieceCentre,
-  tapPiece,
-} from './src/board/boardState';
-import {
-  BoardLayout,
-  Point,
-  TOOLBAR_HEIGHT,
-  computeLayout,
-  pitchBreadth,
-} from './src/board/geometry';
-import {PIECES} from './src/board/pieces';
-import {loadBoard, saveBoard} from './src/board/storage';
-import DraggablePiece from './src/components/DraggablePiece';
-import ExportSheet from './src/components/ExportSheet';
-import FieldMarkings from './src/components/FieldMarkings';
-import {DIM, INK, NET, PAPER} from './src/components/palette';
-import {capturePage, exportPngToNote} from './src/export/exportToNote';
+import {DIM, INK, NET, PAPER} from './src/components/colors';
+import PieceGlyph from './src/components/PieceGlyph';
+import PitchSheet from './src/components/PitchSheet';
+import {hasPitch, pageSizeForScreen, savePitch} from './src/page/capture';
+import {addPitchPage, getContext} from './src/page/pageOps';
+import {PieceKind, pieceSizeFor} from './src/page/pieceShapes';
+import {palette} from './src/palette/bridge';
+import {loadPaletteSettings} from './src/palette/settings';
 
-interface Size {
-  w: number;
-  h: number;
-}
+type PitchState = 'checking' | 'making' | 'ready' | 'failed';
 
-const sizeOf = (e: LayoutChangeEvent): Size => ({
-  w: e.nativeEvent.layout.width,
-  h: e.nativeEvent.layout.height,
-});
-
-const sameSize = (a: Size | null, b: Size) => !!a && a.w === b.w && a.h === b.h;
-
-/** Let the export sheet reach the screen before it is photographed. */
+/** Let the pitch sheet reach the screen before it is photographed. */
 const nextFrames = () =>
   new Promise<void>(done =>
     requestAnimationFrame(() =>
@@ -61,273 +42,238 @@ const nextFrames = () =>
     ),
   );
 
+const LEGEND: Array<{kind: PieceKind; label: string}> = [
+  {kind: 'attacker', label: 'Team X player'},
+  {kind: 'defender', label: 'Team O player'},
+  {kind: 'cone', label: 'Cone'},
+  {kind: 'ball', label: 'Ball'},
+];
+
+const CONTROLS: Array<[string, string]> = [
+  [
+    '⠿',
+    'Drag the grip to move the palette. Let go and it docks to the nearer side.',
+  ],
+  [
+    'Move',
+    'Drag pieces already on the page. Drop one on the palette to remove it.',
+  ],
+  ['Copy', 'Copy this page, drawings and pieces, to a new page after it.'],
+  ['Pitch', 'Add a page with a blank pitch after this one.'],
+  ['Hide', 'Put the palette away until you show it again from here.'],
+];
+
+function close() {
+  PluginManager.closePluginView();
+}
+
+function toast(message: string) {
+  ToastAndroid.show(message, ToastAndroid.LONG);
+}
+
 export default function App(): React.JSX.Element {
-  const [boardSize, setBoardSize] = useState<Size | null>(null);
-  const [board, setBoard] = useState<BoardState | null>(null);
-  /** Size of the page being exported, in dp; null when not exporting. */
-  const [sheetSize, setSheetSize] = useState<Size | null>(null);
-  const exporting = sheetSize !== null;
+  const [permission, setPermission] = useState<boolean | null>(null);
+  const [showing, setShowing] = useState(false);
+  const [pitch, setPitch] = useState<PitchState>('checking');
   const [notice, setNotice] = useState<string | null>(null);
 
-  const layout = useMemo(
-    () => (boardSize ? computeLayout(boardSize.w, boardSize.h) : null),
-    [boardSize],
-  );
-
-  // Drag callbacks outlive renders, so they read the latest values from refs.
-  const boardRef = useRef<BoardState>(EMPTY_BOARD);
-  const layoutRef = useRef<BoardLayout | null>(null);
-  layoutRef.current = layout;
-
+  const screen = useRef(Dimensions.get('screen')).current;
+  const pageSize = useRef(
+    pageSizeForScreen(screen.width, screen.height),
+  ).current;
   const sheetRef = useRef<View>(null);
-  const captureStarted = useRef(false);
+  const capturing = useRef(false);
+
+  const refreshPalette = useCallback(async () => {
+    setPermission(await palette.canDrawOverlays());
+    setShowing(await palette.isShowing());
+  }, []);
 
   useEffect(() => {
-    let alive = true;
-    loadBoard().then(saved => {
-      if (alive) {
-        boardRef.current = saved;
-        setBoard(saved);
-      }
-    });
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  const commit = useCallback((next: BoardState) => {
-    boardRef.current = next;
-    setBoard(next);
-    saveBoard(next);
-  }, []);
-
-  const handleDrop = useCallback(
-    (id: string, centre: Point, tapped: boolean): Point => {
-      const current = layoutRef.current;
-      if (!current) {
-        return centre;
-      }
-      const {state, settleAt} = tapped
-        ? tapPiece(boardRef.current, current, id)
-        : dropPiece(boardRef.current, current, id, centre);
-      if (state !== boardRef.current) {
-        commit(state);
-      }
-      return settleAt;
-    },
-    [commit],
-  );
-
-  const clearBoard = useCallback(() => {
-    setNotice(null);
-    commit(EMPTY_BOARD);
-  }, [commit]);
-
-  const startExport = useCallback(() => {
-    if (exporting || !layout) {
-      return;
-    }
-    setNotice(null);
-    captureStarted.current = false;
-    // The page is drawn at the screen's full size: the note page has the same
-    // shape, so the capture maps onto it pixel for pixel. It is turned to match
-    // the board, in case the reported screen size lags a rotation.
-    const screen = Dimensions.get('screen');
-    const long = Math.max(screen.width, screen.height);
-    const short = Math.min(screen.width, screen.height);
-    setSheetSize(
-      layout.field.landscape ? {w: long, h: short} : {w: short, h: long},
-    );
-  }, [exporting, layout]);
+    refreshPalette();
+    hasPitch(pageSize)
+      .then(ready => setPitch(ready ? 'ready' : 'making'))
+      .catch(e => {
+        console.warn('[snsoccer] could not check the pitch', e);
+        setPitch('making');
+      });
+  }, [pageSize, refreshPalette]);
 
   const onSheetLayout = useCallback(async () => {
-    if (captureStarted.current || !sheetRef.current || !sheetSize) {
+    if (capturing.current || !sheetRef.current) {
       return;
     }
-    captureStarted.current = true;
+    capturing.current = true;
     try {
       await nextFrames();
-      const png = await capturePage(sheetRef.current, sheetSize.w, sheetSize.h);
-      setSheetSize(null);
-      await exportPngToNote(png);
+      await savePitch(sheetRef.current, pageSize);
+      setPitch('ready');
     } catch (e) {
-      console.error('[snsoccer] capture failed', e);
-      setSheetSize(null);
-      setNotice('Could not capture the board. Please try again.');
+      console.error('[snsoccer] could not make the pitch', e);
+      setPitch('failed');
     }
-  }, [sheetSize]);
-  const onBoardLayout = (e: LayoutChangeEvent) => {
-    const next = sizeOf(e);
-    if (!sameSize(boardSize, next)) {
-      setBoardSize(next);
+  }, [pageSize]);
+
+  const showPalette = useCallback(async () => {
+    setNotice(null);
+    const settings = await loadPaletteSettings();
+    const info = await palette.getScreenInfo();
+    const shown = await palette.show({
+      side: settings.side,
+      ...(settings.y !== null ? {y: settings.y} : {}),
+      pieceSize: pieceSizeFor(info?.width ?? pageSize.width),
+    });
+    if (!shown) {
+      setPermission(false);
+      setNotice('Allow the floating palette first.');
+      return;
     }
-  };
+    close();
+  }, [pageSize]);
+
+  const hidePalette = useCallback(() => {
+    palette.hide();
+    setShowing(false);
+  }, []);
+
+  const addPitch = useCallback(() => {
+    // Note operations wait until the panel has closed; see pageOps.ts.
+    close();
+    getContext()
+      .then(addPitchPage)
+      .then(page => toast(`Pitch added as page ${page + 1}.`))
+      .catch(e => toast(`Soccer Board: ${(e as Error).message}`));
+  }, []);
 
   return (
     <View style={styles.root}>
       <StatusBar barStyle="dark-content" backgroundColor={PAPER} />
-
-      {/* Drawn underneath the board, so capturing it never flashes the screen. */}
-      {sheetSize && board && layout && (
-        <ExportSheet
+      {pitch === 'making' && (
+        <PitchSheet
           ref={sheetRef}
-          width={sheetSize.w}
-          height={sheetSize.h}
-          board={board}
-          glyphShare={layout.glyph / pitchBreadth(layout.field)}
+          width={screen.width}
+          height={screen.height}
           onLayout={onSheetLayout}
         />
       )}
 
       <View style={styles.screen}>
-        <Toolbar
-          notice={exporting ? 'Exporting…' : notice}
-          busy={exporting}
-          disabled={!board}
-          onClear={clearBoard}
-          onExport={startExport}
-          onClose={() => PluginManager.closePluginView()}
-        />
-
-        <View style={styles.board} onLayout={onBoardLayout}>
-          {layout && board && (
-            <Board layout={layout} board={board} onDrop={handleDrop} />
-          )}
+        <View style={styles.header}>
+          <Text style={styles.title}>Soccer Board</Text>
+          <Button label="✕" onPress={close} square accessibilityLabel="Close" />
         </View>
-      </View>
-    </View>
-  );
-}
 
-// ── Board ───────────────────────────────────────────────────────────────────
-
-function Board({
-  layout,
-  board,
-  onDrop,
-}: {
-  layout: BoardLayout;
-  board: BoardState;
-  onDrop: (id: string, centre: Point, tapped: boolean) => Point;
-}) {
-  const {field, tray} = layout;
-  // Tray pieces first, then placed pieces in stacking order, so the most
-  // recently moved piece is drawn on top.
-  const placedIds = new Set(board.placed.map(p => p.id));
-  const order = [
-    ...PIECES.filter(p => !placedIds.has(p.id)),
-    ...board.placed.map(p => PIECES.find(d => d.id === p.id)!),
-  ];
-  const showHint = tray.y + tray.h - layout.trayFreeTop > 70;
-
-  return (
-    <>
-      <View style={[styles.abs, {left: field.x, top: field.y}]}>
-        <FieldMarkings
-          width={field.w}
-          height={field.h}
-          landscape={field.landscape}
-        />
-      </View>
-
-      <View
-        style={[
-          styles.abs,
-          styles.tray,
-          {left: tray.x, top: tray.y, width: tray.w, height: tray.h},
-        ]}
-      />
-      {layout.trayHeaders.map(h => (
-        <Text
-          key={h.label}
-          style={[
-            styles.abs,
-            styles.trayHeader,
-            {left: tray.x + 10, top: h.y + 4},
-          ]}>
-          {h.label}
-        </Text>
-      ))}
-      {showHint && (
-        <Text
-          style={[
-            styles.abs,
-            styles.hint,
-            {
-              left: tray.x + 10,
-              width: tray.w - 20,
-              top: layout.trayFreeTop + 8,
-            },
-          ]}>
-          Drag pieces onto the pitch. Tap one, or drag it back here, to take it
-          off.
-        </Text>
-      )}
-
-      {order.map(p => (
-        <DraggablePiece
-          key={p.id}
-          id={p.id}
-          kind={p.kind}
-          centre={pieceCentre(board, layout, p.id)}
-          hit={layout.hit}
-          glyph={layout.glyph}
-          onDrop={onDrop}
-        />
-      ))}
-    </>
-  );
-}
-
-// ── Toolbar ─────────────────────────────────────────────────────────────────
-
-function Toolbar({
-  notice,
-  busy,
-  disabled,
-  onClear,
-  onExport,
-  onClose,
-}: {
-  notice: string | null;
-  busy: boolean;
-  disabled: boolean;
-  onClear: () => void;
-  onExport: () => void;
-  onClose: () => void;
-}) {
-  return (
-    <View style={styles.toolbar}>
-      <View style={styles.titleBlock}>
-        <Text style={styles.title}>Soccer Board</Text>
-        {notice ? (
-          <Text style={styles.notice} numberOfLines={1}>
-            {notice}
+        <ScrollView contentContainerStyle={styles.body}>
+          <Text style={styles.lead}>Pen draws, finger moves.</Text>
+          <Text style={styles.para}>
+            Draw runs and passes with your pen as usual. Drag players, cones and
+            balls off the floating palette with your finger. They land on the
+            page as real note shapes, so copying the page keeps everything.
           </Text>
-        ) : null}
+
+          <Section title="Floating palette">
+            {!palette.available ? (
+              <Text style={styles.para}>
+                The floating palette isn't in this build of the plugin. Build it
+                with npm run build:plugin, which includes the palette's native
+                code.
+              </Text>
+            ) : permission === false ? (
+              <>
+                <Text style={styles.para}>
+                  The palette floats over the note, which needs Android's
+                  "Display over other apps" permission for the Supernote plugin
+                  host. Allow it on the next screen, then come back here.
+                </Text>
+                <View style={styles.row}>
+                  <Button
+                    label="Allow the palette"
+                    primary
+                    onPress={() => palette.requestOverlayPermission()}
+                  />
+                  <Button label="I've allowed it" onPress={refreshPalette} />
+                </View>
+              </>
+            ) : (
+              <View style={styles.row}>
+                <Button
+                  label={showing ? 'Back to the note' : 'Show the palette'}
+                  primary
+                  disabled={permission === null}
+                  onPress={showPalette}
+                />
+                {showing && (
+                  <Button label="Hide the palette" onPress={hidePalette} />
+                )}
+              </View>
+            )}
+          </Section>
+
+          <Section title="Pitch pages">
+            <Text style={styles.para}>
+              {pitch === 'ready'
+                ? 'Add a page with a blank pitch after this one. The Pitch button on the palette does the same.'
+                : pitch === 'failed'
+                ? "The pitch background couldn't be prepared. Close and reopen Soccer Board to try again."
+                : 'Preparing the pitch background…'}
+            </Text>
+            <View style={styles.row}>
+              <Button
+                label="Add a pitch page"
+                primary
+                disabled={pitch !== 'ready'}
+                onPress={addPitch}
+              />
+            </View>
+          </Section>
+
+          <Section title="Pieces">
+            <View style={styles.legend}>
+              {LEGEND.map(item => (
+                <View key={item.kind} style={styles.legendItem}>
+                  <PieceGlyph kind={item.kind} size={40} />
+                  <Text style={styles.legendText}>{item.label}</Text>
+                </View>
+              ))}
+            </View>
+          </Section>
+
+          <Section title="On the palette">
+            {CONTROLS.map(([name, text]) => (
+              <View key={name} style={styles.control}>
+                <Text style={styles.controlName}>{name}</Text>
+                <Text style={[styles.para, styles.controlText]}>{text}</Text>
+              </View>
+            ))}
+            <Text style={[styles.para, styles.note]}>
+              Use your finger on the palette. A pen touch works too, but the pen
+              also writes on the page underneath.
+            </Text>
+          </Section>
+
+          {notice && <Text style={styles.notice}>{notice}</Text>}
+        </ScrollView>
       </View>
-      <ToolButton
-        label="Clear Board"
-        onPress={onClear}
-        disabled={disabled || busy}
-      />
-      <ToolButton
-        label="Export to Note"
-        onPress={onExport}
-        disabled={disabled || busy}
-        primary
-      />
-      <ToolButton
-        label="✕"
-        onPress={onClose}
-        accessibilityLabel="Close"
-        square
-      />
     </View>
   );
 }
 
-function ToolButton({
+function Section({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <View style={styles.section}>
+      <Text style={styles.sectionTitle}>{title}</Text>
+      {children}
+    </View>
+  );
+}
+
+function Button({
   label,
   onPress,
   disabled,
@@ -379,25 +325,52 @@ function ToolButton({
 const styles = StyleSheet.create({
   root: {flex: 1, backgroundColor: PAPER},
   screen: {...StyleSheet.absoluteFillObject, backgroundColor: PAPER},
-  abs: {position: 'absolute'},
 
-  toolbar: {
-    height: TOOLBAR_HEIGHT,
+  header: {
+    height: 76,
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 14,
-    gap: 10,
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
     borderBottomWidth: 3,
     borderBottomColor: INK,
-    backgroundColor: PAPER,
   },
-  titleBlock: {flex: 1, minWidth: 0},
   title: {fontSize: 26, fontWeight: 'bold', color: INK},
-  notice: {fontSize: 16, color: DIM, marginTop: 2},
+
+  body: {
+    padding: 28,
+    gap: 26,
+    maxWidth: 760,
+    width: '100%',
+    alignSelf: 'center',
+  },
+  lead: {fontSize: 30, fontWeight: 'bold', color: INK},
+  para: {fontSize: 18, lineHeight: 27, color: INK},
+  note: {color: DIM, marginTop: 6},
+
+  section: {gap: 12, borderTopWidth: 2, borderTopColor: INK, paddingTop: 16},
+  sectionTitle: {fontSize: 20, fontWeight: 'bold', color: INK},
+  row: {flexDirection: 'row', flexWrap: 'wrap', gap: 12},
+
+  legend: {flexDirection: 'row', flexWrap: 'wrap', gap: 24},
+  legendItem: {flexDirection: 'row', alignItems: 'center', gap: 10},
+  legendText: {fontSize: 18, color: INK},
+
+  control: {flexDirection: 'row', gap: 16, alignItems: 'flex-start'},
+  controlName: {
+    width: 64,
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: INK,
+    lineHeight: 27,
+  },
+  controlText: {flex: 1},
+
+  notice: {fontSize: 18, color: INK, fontWeight: 'bold'},
 
   button: {
-    height: 52,
-    paddingHorizontal: 18,
+    height: 56,
+    paddingHorizontal: 22,
     borderWidth: 3,
     borderColor: INK,
     borderRadius: 8,
@@ -405,21 +378,11 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: PAPER,
   },
-  buttonSquare: {width: 52, paddingHorizontal: 0},
+  buttonSquare: {width: 52, height: 52, paddingHorizontal: 0},
   buttonDark: {backgroundColor: INK},
   buttonDisabled: {borderColor: NET, backgroundColor: PAPER},
   buttonText: {fontSize: 19, fontWeight: 'bold', color: INK},
   buttonTextSquare: {fontSize: 24},
   buttonTextDark: {color: PAPER},
   buttonTextDisabled: {color: NET},
-
-  board: {flex: 1},
-  tray: {
-    borderWidth: 2,
-    borderColor: INK,
-    borderRadius: 8,
-    backgroundColor: PAPER,
-  },
-  trayHeader: {fontSize: 16, fontWeight: 'bold', color: INK},
-  hint: {fontSize: 15, lineHeight: 21, color: DIM},
 });

@@ -19,6 +19,7 @@
  */
 import { createElement, forwardRef, useImperativeHandle, useRef } from 'react';
 import type { ReactNode } from 'react';
+import { registerImage } from './note';
 
 export interface CaptureOptions {
   width?: number;
@@ -75,6 +76,9 @@ export async function captureRef(target: unknown, options: CaptureOptions = {}):
     outHeight: Math.round(options.height ?? height),
     uri: result === 'tmpfile' ? path : `(${result})`,
   };
+  // Keep the snapshot under its path, so copying the file and using it as a
+  // page template shows the captured view (mocks/note.ts).
+  registerImage(path, { node: el.cloneNode(true) as HTMLElement, width, height });
   console.log('[preview] captureRef', { ...options, result, returned: uri });
   window.dispatchEvent(new CustomEvent('preview-capture', { detail }));
   return uri;

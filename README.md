@@ -1,60 +1,72 @@
 # SNSoccer: Soccer Board for Supernote
 
-A coach's whiteboard plugin for Supernote. Drag players, cones and balls onto a
-pitch, then **Export to Note** to add the drill to the open notebook
-as a new page. The diagram becomes that page's background, so you can draw
-runs and passes over it with the pen.
+A coach's whiteboard plugin for Supernote. Draw runs and passes on the note
+page with your pen, and drag players, cones and balls onto it from a palette
+that floats over the note while you write.
 
-![Soccer Board, rondo drill](docs/board.png)
+**Pen draws, finger moves.**
 
-## Features
+![Soccer Board: a rondo drill on a pitch page, with the floating palette](docs/board.png)
 
-- **The pitch runs along the screen's long side**, with regulation markings
-  drawn in proportion. Held upright, the goals are at the top and bottom. Turn
-  the Supernote sideways and the goals move to the left and right, with the
-  drill turned along with the pitch: the top goal becomes the left one, as if
-  you had turned a clipboard. A drill looks the same whichever way round you
-  build it.
-- **Pieces are told apart by shape, not colour**, for a greyscale screen:
-  **X** for Team X, **O** for Team O, solid **▲** cones and solid **●**
-  balls. Each piece has a white halo, so it stays visible on a pitch line.
-  The tray holds 11 of each team, 6 cones and 3 balls.
-- **Drag and drop** uses React Native's `PanResponder`, and pen and finger both
-  work. Each touch target is 64dp, about 9mm. Drop a piece on the pitch to
-  place it. To take it off, drop it anywhere else or tap it; it goes back to
-  its own slot in the tray.
-- **Saved automatically** to AsyncStorage after every move, so a drill
-  survives closing the plugin, switching notes and rebooting. Positions are
-  stored as fractions of the pitch, so a drill comes out the same on every
-  device.
-- **Clear Board** sends every piece back to the tray at once.
-- **Export to Note** adds a page after the current one with the diagram as its
-  background, and takes you to it.
+## How it works
 
-## How Export to Note works
+- **Pitch pages.** Soccer Board adds a page after the current one with a
+  regulation pitch as its background, goals at the top and bottom. You write
+  on it like any page. Pieces can go on any page, not just pitch pages.
+- **The floating palette** is a narrow strip docked to the side of the screen.
+  It stays up while you write:
 
-`App.tsx` → `src/components/ExportSheet.tsx` → `src/export/exportToNote.ts`
+  | Control | What it does |
+  |---|---|
+  | ⠿ | Drag the grip to move the palette. It docks to the nearer side. |
+  | **X O ▲ ●** | Drag one onto the page with your finger to place it: Team X player, Team O player, cone, ball. |
+  | Move | A layer for dragging pieces already on the page. Drop one on the palette to remove it. Done returns to writing. |
+  | Copy | Copies this page, background, drawings and pieces, to a new page after it, all still editable. Good for drill progressions. |
+  | Pitch | Adds a blank pitch page after this one. |
+  | Hide | Puts the palette away until you show it again. |
 
-1. `ExportSheet` renders the pitch and the placed pieces on a screen-sized
-   white sheet. The tray is left out. The sheet is drawn *underneath* the board
-   UI, so it never flashes on screen.
-2. `react-native-view-shot` captures that sheet as a PNG at the note page's
-   pixel size, 1404 × 1872 or 1920 × 2560. The shapes are drawn at page
-   resolution rather than scaled up from the smaller on-screen pitch, which
-   keeps them sharp on e-ink.
-3. The plugin view closes. Note operations can deadlock while a plugin view is
-   open, so every SDK file call happens after this step. The host also pauses
-   JS timers once the view is closed, so nothing after this point waits on a
-   timer.
-4. The PNG is copied to `EXPORT/SNSoccer/drill-<timestamp>.png`, where the
-   Note app can read it.
-5. `PluginNoteAPI.saveCurrentNote()`, so strokes you just wrote aren't lost,
-   then `PluginFileAPI.insertNotePage({notePath, page: current + 1, template:
-   pngPath})` and `jumpToPage(current + 1)`. `page` is the index the new page
-   takes. Older firmware answers `null` on success, which counts as success.
-6. A toast reports the outcome. The export button is registered for NOTE only.
+- **Pieces are real note shapes**, lines, circles and polygons drawn by the
+  Note app. They're told apart by shape, not colour, for the greyscale screen,
+  and they stay on the page after the plugin closes. On pitch pages they go on
+  their own "Pieces" layer; you write on the main layer, so the native lasso
+  and eraser there leave them alone.
+- **Why a finger for the palette?** On a Supernote the pen reaches the note by
+  a hardware path that no window can intercept, so a pen on the palette also
+  writes on the page underneath. A finger never writes. A pen still works on
+  the palette if you don't mind the mark, and the plugin says so the first
+  time.
+- **The toolbar panel** is for setup. Open **Soccer Board** from the Note
+  toolbar to allow the palette (Android's "Display over other apps", granted
+  to the plugin host), show or hide it, and add a pitch page. The first time
+  it opens, it draws the pitch background.
 
-Steps 3 to 5 follow what Modulanner established on devices.
+## How it's built
+
+| Path | What it is |
+|---|---|
+| `index.js` | Registers the panel, starts the palette controller, adds the NOTE toolbar button |
+| `App.tsx` | The panel: palette setup, pitch preparation, instructions |
+| `android/.../palette/` | The floating palette in Kotlin: the strip, the drag ghost and the move layer as system overlay windows (`SoccerPaletteModule`, registered in `MainApplication`) |
+| `src/palette/controller.ts` | Turns palette events into page edits, one at a time |
+| `src/page/pageOps.ts` | Place, move and remove pieces; copy a page; add a pitch page |
+| `src/page/pieceShapes.ts` | Each piece as note geometry, and the `userData` tag that identifies it |
+| `src/page/capture.ts`, `src/components/PitchSheet.tsx` | Drawing and saving the pitch background |
+
+The page work follows what the Modulanner plugin established on devices:
+
+- Every page edit runs with the panel **closed**, because SDK calls can
+  deadlock while it's open. With the panel closed the host also suspends JS
+  timers, so nothing waits on one.
+- `saveCurrentNote()` runs before a page is inserted, or strokes still on
+  screen are lost.
+- `insertNotePage`'s `page` is the index the new page takes, and a PNG path
+  works as its template.
+- Only an explicit `success: false` is a failure. Older firmware answers
+  `null` from calls that worked.
+- Pieces are tagged with `userData`. Some firmware drops it, so every write is
+  also recorded per page in AsyncStorage, and untagged shapes that match a
+  recorded piece exactly count as that piece. The user's own drawing is never
+  touched.
 
 ## Build
 
@@ -67,11 +79,12 @@ npm run build:plugin          # -> build/outputs/snsoccer.snplg
 ```
 
 `build:plugin` runs Gradle's autolinking step and then the template's
-`buildPlugin.sh`, or `buildPlugin.ps1` on Windows. The extra step matters
-because AsyncStorage and ViewShot are native modules. `buildPlugin` reads their
-package list from Gradle output that doesn't exist on a clean checkout, so
-running `buildPlugin` directly the first time produces a plugin that crashes on
-launch. Running it a second time also fixes that.
+`buildPlugin.sh`, or `buildPlugin.ps1` on Windows. The plugin carries native
+code (the palette, AsyncStorage and ViewShot), which `buildPlugin` compiles into
+`app.npk` and lists in `PluginConfig.json`'s `reactPackages`. It reads the
+autolinked part of that list from Gradle output that doesn't exist on a clean
+checkout, so running `buildPlugin` directly the first time produces a plugin
+that fails on launch; running it a second time also fixes that.
 
 Install on the device:
 
@@ -87,53 +100,49 @@ ID.
 ## Preview in a browser
 
 `tools/ui-preview` is a copy of
-[sn-plugin-ui-preview](https://github.com/firestormkirby/sn-plugin-ui-preview).
-It runs the real `App.tsx` in a browser, with the SDK, AsyncStorage and
-ViewShot mocked:
+[sn-plugin-ui-preview](https://github.com/firestormkirby/sn-plugin-ui-preview)
+extended with a simulated note. It runs the real panel and the real palette
+controller against an in-memory note: the mouse is the pen on the page, and a
+web stand-in for the native palette (`tools/ui-preview/soccer/WebPalette.tsx`)
+sends the same events the Kotlin one does.
 
 ```bash
 npm run preview:install       # once
 npm run preview               # http://localhost:5178
 ```
 
-The scenarios are *First run*, *Rondo drill*, *Full match shape*, *Export from
-a PDF*, *Page insert fails* and *Damaged save*.
-The device list has each screen upright and in landscape.
-You can drag pieces with the mouse. When you press **Export to Note**, the
-**Last capture** card shows the page that would be added, and the browser
-console lists every SDK call in order.
-
-The preview can't reproduce SDK threading or real file writes. Check the
-export on a device.
+Scenarios: *Drawing a drill*, *First run*, *Palette allowed*, *Blank note* and
+*In a PDF*. The browser console logs every SDK call. The preview can't
+reproduce the device's pen hardware, SDK threading or real file writes.
 
 ## Develop
 
 ```bash
-npm test           # board rules, persistence, layout, export flow, App smoke test
+npm test           # piece shapes, page operations (with and without userData), controller, panel
 npm run typecheck
 npm run lint
 ```
 
-| Path | What it is |
-|---|---|
-| `index.js` | Registers the component, calls `PluginManager.init()`, adds the NOTE toolbar button |
-| `App.tsx` | Root component: toolbar, board, drag wiring, persistence, export trigger |
-| `src/board/boardState.ts` | Pure drag-and-drop rules and the save format |
-| `src/board/geometry.ts` | Pitch dimensions and the screen layout |
-| `src/board/storage.ts` | AsyncStorage load and save |
-| `src/components/` | Pitch markings, piece glyphs, draggable piece, export sheet |
-| `src/export/exportToNote.ts` | Capture, then copy, then insert the page |
+The Kotlin was compiled against the Android framework and React Native
+0.79.2's signatures, but it hasn't run on a device yet.
 
 ## To check on the first device install
 
-These depend on host behaviour that can't be exercised off-device:
-
-- Whether `Dimensions.get('screen')` times the pixel ratio equals the note
-  page size. The export sheet is sized from it, so a mismatch would show up as
-  a stretched diagram.
-- Rotation. Modulanner found that the plugin view does not rotate with the
-  device, so the landscape layout may only appear where the host really gives
-  the plugin a landscape view. Check what the board looks like with the
-  device turned.
-- Exporting in landscape: how the note shows a page captured at 1872 × 1404
-  or 2560 × 1920.
+- **The palette appears** after allowing "Display over other apps" for the
+  plugin host, and stays over the note after the panel closes. Check whether
+  it lingers over other apps after leaving the note; if it does, Hide puts it
+  away.
+- **Pieces look right.** Geometry `penWidth` units aren't documented. The
+  pieces use 300, and their solid shapes are nested outlines 3px apart. If
+  they come out hairline or blobby, tune `PIECE_PEN.width` in
+  `src/page/pieceShapes.ts`.
+- **Moving and removing find the pieces.** Check the log for
+  `insertPageElements` / `batchUpdatePageElements` results, and whether
+  `userData` survives (if not, the AsyncStorage fallback takes over).
+- **The Pieces layer** on new pitch pages (`insertLayer`), and that pieces
+  land on it.
+- **Copy page** carries drawings over (`insertElements` with elements read
+  from the source page).
+- **Rotation.** Placing and moving are limited to the upright screen for now,
+  and the palette says so when turned. Turned pages need the screen-to-page
+  mapping measured on a device.

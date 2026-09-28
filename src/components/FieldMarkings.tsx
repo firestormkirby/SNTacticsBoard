@@ -14,8 +14,8 @@
 import React from 'react';
 import {StyleSheet, View} from 'react-native';
 
-import {CANVAS_METRES, PITCH} from '../board/geometry';
-import {INK, NET, PAPER} from './palette';
+import {CANVAS_METRES, PITCH} from '../page/pitchGeometry';
+import {INK, NET, PAPER} from './colors';
 
 interface Props {
   width: number;

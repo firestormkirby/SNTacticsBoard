@@ -12,8 +12,8 @@
 import React from 'react';
 import {StyleSheet, View} from 'react-native';
 
-import type {PieceKind} from '../board/pieces';
-import {INK, PAPER} from './palette';
+import type {PieceKind} from '../page/pieceShapes';
+import {INK, PAPER} from './colors';
 
 interface Props {
   kind: PieceKind;

@@ -14,6 +14,8 @@ import { View, Text, Pressable, Image } from 'react-native';
 import { seed } from './mocks/async-storage';
 import { seedFiles, seedHashes } from './mocks/react-native-fs';
 import { onViewStateChange, CURRENT_PAGE, configureSdk } from './mocks/sn-plugin-lib';
+import { resetNote } from './mocks/note';
+import NotePage from './NotePage';
 import type { CaptureEventDetail } from './mocks/react-native-view-shot';
 import config from '../preview.config';
 
@@ -47,6 +49,7 @@ async function boot(): Promise<void> {
    * pixel, so these two must agree.
    */
   CURRENT_PAGE.pageSize = { width: window.innerWidth, height: window.innerHeight };
+  resetNote(CURRENT_PAGE.totalPages, CURRENT_PAGE.pageNum, CURRENT_PAGE.template || 'style_white');
 
   await config.boot?.(scenario);
 }
@@ -185,7 +188,7 @@ function CaptureCard() {
 }
 
 function Device() {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(scenario.panel !== 'closed');
   // Remounts the panel, so reopening runs its mount effects as a fresh open
   // does on the device rather than resuming stale React state.
   const [generation, setGeneration] = useState(0);
@@ -200,11 +203,20 @@ function Device() {
     // screen instead.
     <View style={{ height: '100%', width: '100%', backgroundColor: '#ffffff' }}>
       <Backdrop />
+      {config.simulateNote && (
+        <NotePage
+          pluginName={config.name}
+          onOpenPlugin={() => { setGeneration(g => g + 1); setOpen(true); }}
+        />
+      )}
       {open
         ? <Panel key={generation} />
-        : <ClosedScreen onReopen={() => { setGeneration(g => g + 1); setOpen(true); }} />}
+        : !config.simulateNote && (
+          <ClosedScreen onReopen={() => { setGeneration(g => g + 1); setOpen(true); }} />
+        )}
+      {config.Overlay && <config.Overlay />}
       <Toast />
-      <CaptureCard />
+      {config.showCaptures !== false && <CaptureCard />}
     </View>
   );
 }

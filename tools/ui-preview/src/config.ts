@@ -39,6 +39,8 @@ export interface Scenario {
    * `import page from './assets/page.png'`.
    */
   backdrop?: string;
+  /** Whether the plugin panel starts open (the default) or closed. */
+  panel?: 'open' | 'closed';
 }
 
 export interface DevicePreset {
@@ -89,6 +91,22 @@ export interface PreviewConfig {
   files?: Record<string, FakeFile | string>;
   /** SDK answers shared by every scenario. */
   sdk?: SdkConfig;
+  /**
+   * Draw a simulated note page (NotePage.tsx) under the panel instead of the
+   * "Panel closed" card: the in-memory note's current page, with whatever the
+   * plugin wrote to it, and mouse drawing standing in for the pen.
+   */
+  simulateNote?: boolean;
+  /**
+   * Rendered above the panel and the note, open or closed. For stand-ins of
+   * native windows a plugin shows over the note, such as a floating palette.
+   */
+  Overlay?: ComponentType;
+  /**
+   * Show the "Last capture" card when the plugin calls captureRef (default
+   * true). Turn it off when captures are routine background work.
+   */
+  showCaptures?: boolean;
   /** Defaults to one Manta and one Nomad preset. */
   devices?: DevicePreset[];
   /**

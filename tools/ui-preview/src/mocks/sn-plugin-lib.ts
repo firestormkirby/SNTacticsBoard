@@ -23,6 +23,10 @@
  * than editing this file.
  */
 import type { SdkConfig } from '../config';
+import {
+  NOTE, addElements, addLayer, copyImage, elementsOn, goToPage, hasImage,
+  insertPage, layersOn, removeElements, snapshotTemplate,
+} from './note';
 
 const ok = <T,>(result?: T) => Promise.resolve({ success: true, result });
 
@@ -73,28 +77,64 @@ const defaults: Record<string, Record<string, (...args: any[]) => any>> = {
     hasPermission: () => ok(true),
     requestPermission: () => ok(true),
   },
+  /**
+   * Page and element calls read and write the in-memory note (mocks/note.ts),
+   * so what a plugin puts on a page appears on the simulated page.
+   */
   PluginCommAPI: {
     getCurrentFilePath: () => ok(CURRENT_PAGE.filePath),
-    getCurrentPageNum: () => ok(CURRENT_PAGE.pageNum),
+    getCurrentPageNum: () => ok(NOTE.current),
     getLassoRect: () => ok(null),
     getLassoElements: () => ok([]),
     getLassoElementTypeCounts: () => ok({}),
     // Enough of an element for code that sets fields on one and inserts it.
-    createElement: () => ok({ link: {}, textBox: {}, picture: {}, recycle: () => {} }),
+    createElement: (type: number) =>
+      ok({ type, layerNum: 0, link: {}, textBox: {}, picture: {}, recycle: () => {} }),
     canHandwrite: () => ok(true),
-    jumpToPage: () => ok(),
+    jumpToPage: (page: number) => ok(goToPage(page)),
+    reloadFile: () => ok(true),
+    getPageDisplaySize: () => ok(CURRENT_PAGE.pageSize),
+    insertPageElements: (els: unknown[], page: number, layer?: number | null) => {
+      addElements(page, els, layer);
+      return ok(true);
+    },
+    deletePageElements: (nums: number[], page: number) => {
+      removeElements(page, nums);
+      return ok(true);
+    },
+    batchUpdatePageElements: (nums: number[], els: unknown[], page: number, layer?: number | null) => {
+      removeElements(page, nums);
+      addElements(page, els, layer);
+      return ok(true);
+    },
   },
   PluginFileAPI: {
-    getNoteTotalPageNum: () => ok(CURRENT_PAGE.totalPages),
+    getNoteTotalPageNum: () => ok(NOTE.pages.length),
     getPageSize: () => ok(CURRENT_PAGE.pageSize),
     getKeyWords: () => ok([]),
-    getElements: () => ok([]),
+    getElements: (page: number) => ok(elementsOn(page)),
     getElementNumList: () => ok([]),
     getTitles: () => ok([]),
-    insertElements: () => ok(),
+    insertElements: (_path: string, page: number, els: unknown[]) => {
+      addElements(page, els);
+      return ok(true);
+    },
     modifyElements: () => ok(),
-    deleteElements: () => ok(),
-    insertNotePage: () => ok(),
+    deleteElements: (_path: string, page: number, nums: number[]) => {
+      removeElements(page, nums);
+      return ok(true);
+    },
+    insertNotePage: (params: { page: number; template: string }) => {
+      insertPage(params.page, params.template);
+      return ok(true);
+    },
+    getLayers: (_path: string, page: number) => ok(layersOn(page)),
+    insertLayer: (_path: string, page: number, layer: { layerId?: number; name?: string }) =>
+      ok(addLayer(page, layer)),
+    generateNoteTemplatePng: (_path: string, page: number, png: string) => {
+      snapshotTemplate(page, png, CURRENT_PAGE.pageSize);
+      return ok(true);
+    },
     openFile: () => ok(),
   },
   PluginNoteAPI: {
@@ -110,17 +150,25 @@ const defaults: Record<string, Record<string, (...args: any[]) => any>> = {
    * `{success, result}`: `exists()` gives `false`, not an object that happens
    * to be truthy. Answers are deliberately "nothing is there": an empty listing
    * and exists:false, so a plugin renders its empty state rather than a
-   * half-populated one built from guesses. Writes report success and change
-   * nothing. Give a scenario real answers through `sdk.overrides` when a
-   * screen needs files to show.
+   * half-populated one built from guesses, except for images the plugin
+   * captured or copied this session (mocks/note.ts). Other writes report
+   * success and change nothing. Give a scenario real answers through
+   * `sdk.overrides` when a screen needs files to show.
    */
   FileUtils: {
-    exists: logged('FileUtils.exists', false),
+    exists: (path: string) => {
+      console.log('[preview-sdk] FileUtils.exists', path);
+      return Promise.resolve(hasImage(path));
+    },
     getExternalDirPath: logged('FileUtils.getExternalDirPath', []),
     makeDir: logged('FileUtils.makeDir', true),
     getExportPath: logged('FileUtils.getExportPath', '/storage/emulated/0/EXPORT'),
     renameToFile: logged('FileUtils.renameToFile', true),
-    copyFile: logged('FileUtils.copyFile', true),
+    copyFile: (from: string, to: string) => {
+      console.log('[preview-sdk] FileUtils.copyFile', from, to);
+      copyImage(from, to);
+      return Promise.resolve(true);
+    },
     listFiles: logged('FileUtils.listFiles', []),
     getFileMD5: logged('FileUtils.getFileMD5', ''),
     deleteFile: logged('FileUtils.deleteFile', true),

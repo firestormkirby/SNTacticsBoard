@@ -9,13 +9,17 @@ import {PluginManager} from 'sn-plugin-lib';
 
 import App from './App';
 import {name as appName} from './app.json';
+import {startPaletteController} from './src/palette/controller';
 
 // appName must equal pluginKey in PluginConfig.json, or the host won't load it.
 AppRegistry.registerComponent(appName, () => App);
 
 PluginManager.init();
 
-// NOTE only: the export writes a page into a .note file, which DOC can't take.
+// Listens to the floating palette whether or not the panel is open.
+startPaletteController();
+
+// NOTE only: pieces and pitch pages go into a .note file, which DOC can't take.
 PluginManager.registerButton(1, ['NOTE'], {
   id: 100,
   name: JSON.stringify({
