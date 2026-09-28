@@ -4,6 +4,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {createFakeNote} from './helpers/fakeNote';
 
 let mockNote = createFakeNote();
+let mockLife: {onMsg: (d: {state: number}) => void} | null = null;
+let mockPenUp: {onMsg: (d: unknown) => void} | null = null;
 jest.mock('sn-plugin-lib', () => ({
   get PluginCommAPI() {
     return mockNote.sdk.PluginCommAPI;
@@ -38,6 +40,7 @@ const mockPalette = {
   setPieces: jest.fn(),
   startTicking: jest.fn(),
   stopTicking: jest.fn(),
+  notify: jest.fn((_message: string) => {}),
 };
 NativeModules.SoccerPalette = mockPalette;
 
@@ -49,7 +52,6 @@ import {
   loadLayoutAsPage,
   loadLayoutHere,
   saveThisPage,
-  addPitch,
   pageToScreen,
   panelOpened,
   screenToPage,
@@ -83,6 +85,14 @@ beforeEach(async () => {
   mockNote.sdk.PluginManager = {
     closePluginView: jest.fn(async () => true),
     showPluginView: jest.fn(async () => true),
+    registerPluginLifeListener: jest.fn((l: any) => {
+      mockLife = l;
+      return {remove: () => {}};
+    }),
+    registerEventListener: jest.fn((_e: string, _t: number, l: any) => {
+      mockPenUp = l;
+      return {remove: () => {}};
+    }),
   } as any;
   await AsyncStorage.clear();
   jest.clearAllMocks();
@@ -133,7 +143,7 @@ describe('pieces', () => {
   it('refuses to place on a turned screen', async () => {
     await handle({type: 'drop', kind: 'cone', ...at(300, 500, 1)});
     expect(await readPieces(await getContext())).toEqual([]);
-    expect((ToastAndroid.show as jest.Mock).mock.calls[0][0]).toMatch(
+    expect((mockPalette.notify.mock.calls[0] as string[])[0]).toMatch(
       /upright/,
     );
   });
@@ -224,19 +234,15 @@ describe('menu actions', () => {
     );
     await settle();
     expect(mockNote.state.current).toBe(1);
-    expect((ToastAndroid.show as jest.Mock).mock.calls.at(-1)[0]).toBe(
+    expect((mockPalette.notify.mock.calls.at(-1) as string[])[0]).toBe(
       'Copied to page 2.',
     );
   });
 
   it('says where the page went when it cannot go there', async () => {
     mockNote = createFakeNote({noJump: true});
-    expect(await addPitch().catch(e => e.message)).toMatch(/prepare the pitch/);
-    mockNote.state.files.add(
-      '/storage/emulated/0/EXPORT/SNSoccer/pitch-1404x1872.png',
-    );
-    expect(await addPitch()).toBe(
-      'Pitch added as page 2, after this one. Turn the page to see it.',
+    expect(await copyThisPage()).toBe(
+      'Copied to page 2, after this one. Turn the page to see it.',
     );
   });
 
@@ -279,13 +285,15 @@ describe('menu actions', () => {
   });
 
   it('names the template: a pitch page, and copies of it, are Soccer Field', async () => {
-    mockNote.state.files.add(
-      '/storage/emulated/0/EXPORT/SNSoccer/pitch-1404x1872.png',
-    );
-    await addPitch();
-    await copyThisPage(); // page 3 is a copy of the pitch page
+    mockNote.state.pages[0].template =
+      '/storage/emulated/0/EXPORT/SNSoccer/pitch-1404x1872.png';
+    await saveThisPage('On the pitch');
+    await copyThisPage(); // page 2 is a copy of the pitch page
     await saveThisPage('From a copy');
-    expect(tags()).toEqual(['~BOARD:Soccer Field:From a copy']);
+    expect(tags()).toEqual([
+      '~BOARD:Soccer Field:On the pitch',
+      '~BOARD:Soccer Field:From a copy',
+    ]);
   });
 
   it('finds pages by keyword, wherever they are in the note', async () => {
@@ -374,8 +382,92 @@ describe('menu actions', () => {
       ...at(1, 1),
     });
     await settle();
-    expect((ToastAndroid.show as jest.Mock).mock.calls[0][0]).toMatch(
+    expect((mockPalette.notify.mock.calls[0] as string[])[0]).toMatch(
       /Open a note/,
     );
+  });
+});
+
+describe('the work queue', () => {
+  const emit = (e: object) => DeviceEventEmitter.emit(PALETTE_EVENT, e);
+  const tick = async (n = 1) => {
+    for (let i = 0; i < n; i++) {
+      emit({type: 'tick'});
+      await settle();
+    }
+  };
+
+  it('gives up on a call the note never answers, and carries on', async () => {
+    startPaletteController();
+    await settle();
+    const real = mockNote.sdk.PluginCommAPI.getCurrentFilePath;
+    mockNote.sdk.PluginCommAPI.getCurrentFilePath = () => new Promise(() => {});
+    emit({type: 'drop', kind: 'cone', ...at(300, 500)});
+    await settle();
+    mockNote.sdk.PluginCommAPI.getCurrentFilePath = real;
+    emit({type: 'drop', kind: 'ball', ...at(600, 500)});
+    await settle();
+    expect(mockNote.state.pages[0].elements).toHaveLength(0); // still stuck
+
+    await tick(10);
+    expect(mockPalette.notify).toHaveBeenCalledWith(
+      "The note didn't answer. Please try again.",
+    );
+    const pieces = await readPieces(await getContext());
+    expect(pieces.map(p => p.kind)).toEqual(['ball']);
+  });
+
+  it('shows messages in its own window while the menu is closed', async () => {
+    startPaletteController();
+    mockNote.state.notePath = '/storage/emulated/0/Document/book.pdf';
+    emit({type: 'drop', kind: 'cone', ...at(1, 1)});
+    await settle();
+    expect(mockPalette.notify).toHaveBeenCalledWith(
+      expect.stringMatching(/Open a note/),
+    );
+    expect(ToastAndroid.show).not.toHaveBeenCalled();
+  });
+});
+
+describe('the pen', () => {
+  const emit = (e: object) => DeviceEventEmitter.emit(PALETTE_EVENT, e);
+  const stroke = (numInPage: number) => ({type: 0, numInPage, layerNum: 0});
+
+  it('holds note work while the pen is locked, and closes the view after', async () => {
+    startPaletteController();
+    await settle();
+    emit({type: 'penLock', on: true});
+    // The lock opens our view: that's not the menu opening.
+    mockLife?.onMsg({state: 2});
+    expect(mockPalette.hide).not.toHaveBeenCalled();
+
+    emit({type: 'drop', kind: 'cone', ...at(300, 500)});
+    await settle();
+    expect(mockNote.state.pages[0].elements).toHaveLength(0);
+
+    emit({type: 'penLock', on: false});
+    await settle();
+    expect(mockNote.sdk.PluginManager.closePluginView).toHaveBeenCalled();
+    expect((await readPieces(await getContext())).map(p => p.kind)).toEqual([
+      'cone',
+    ]);
+  });
+
+  it('erases a stroke the pen drew while dragging, and nothing else', async () => {
+    startPaletteController();
+    await settle();
+    const page = mockNote.state.pages[0];
+    page.elements.push(stroke(801), stroke(802), {type: 700, numInPage: 803});
+
+    // The user's own writing, before any drag: left alone.
+    mockPenUp?.onMsg([stroke(801)]);
+    await settle();
+
+    emit({type: 'penDrag', active: true});
+    emit({type: 'penDrag', active: false});
+    // The drag's stroke arrives just after the drop; a geometry never goes.
+    mockPenUp?.onMsg([stroke(802), {type: 700, numInPage: 803}]);
+    await settle();
+    expect(page.elements.map(e => e.numInPage)).toEqual([801, 803]);
   });
 });

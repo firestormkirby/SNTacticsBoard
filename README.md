@@ -4,7 +4,7 @@ A coach's whiteboard plugin for Supernote. Draw runs and passes on the note
 page with your pen, and drag players, cones and balls onto it from a floating
 button that stays out of the way while you write.
 
-![Soccer Board: a rondo drill on a pitch page, with the floating button and its pieces](docs/board.png)
+![Soccer Board: a rondo drill on a pitch, with the floating button and its pieces](docs/board.png)
 
 ## How it works
 
@@ -23,11 +23,22 @@ button that stays out of the way while you write.
   is placed where you let go. Drag a piece that's already on the page and it
   moves. Drop a piece on the button or the palette to remove it. All of it
   works with the pen or a finger.
+- **The pen doesn't write while it drags.** The pen writes into the note
+  through the digitizer, whatever window it's over, so a pen drag on the
+  button, the palette or a piece would draw a line. For the length of a pen
+  drag the pen is locked, the way the Supernote plugin notes describe (the
+  plugin's view goes to state 1, which makes the Note app turn the pen off,
+  and back to state 0 at the drop); the screen may flash as it does. Any
+  stroke that still gets through, begun before the lock lands, is erased
+  after the drop: the SDK's `event_pen_up` hands over each finished stroke,
+  and one that ends during a pen drag, or within 2.5 s of it, is deleted.
+  Only strokes, and only those. The lock can be switched off in the menu;
+  the erasing always happens.
 - **Pieces are real note shapes**, lines, circles and polygons drawn by the
   Note app. They're told apart by shape, not colour, for the greyscale screen,
-  and they stay on the page after the plugin closes. On pitch pages they go on
-  their own "Pieces" layer; you write on the main layer, so the native lasso
-  and eraser there leave them alone.
+  and they stay on the page after the plugin closes. On a page with a layer
+  named "Pieces" they go on it, so the native lasso and eraser on the main
+  layer leave them alone.
 - **The menu** (hold the button, or open **Soccer Board** from the Note
   toolbar) is a popout, two thirds of the screen each way, with the note
   still showing around it; tap outside it to close it. It has the two exports
@@ -39,7 +50,6 @@ button that stays out of the way while you write.
   | Copy this page | Copies the page, background, drawing and pieces, to a new page after it, all still editable. Good for drill progressions. |
   | Save this page | Saves the whole page, background, drawing and pieces, under a name. A drawing with no pieces is fine: a base to start from. Saving under an existing name replaces it. |
   | Saved layouts | **New page** adds a copy of the saved page after the one you're on. **Pieces here** swaps the pieces on this page for the saved ones and keeps your drawing; piece positions are kept as fractions of the page, so they land in the same places on any device. |
-  | Pitch pages | Adds a page after this one with a regulation pitch as its background, goals at the top and bottom, and goes to it. Pieces can go on any page, not just pitch pages. |
 
   New pages come after the one you're on. Where the firmware can't go to a
   page by itself (`jumpToPage` arrived with the 2026-08-24 plugin firmware),
@@ -57,13 +67,11 @@ button that stays out of the way while you write.
   the menu closes, the list catches up with it: a page deleted there drops off
   the list, and a page you tag `~BOARD:<template>:<name>` there joins it.
 
-  The first time it opens, the menu draws the pitch background.
-
 - **Permissions.** Soccer Board declares `plugin.permission.FILE:READ` and
-  `FILE:WRITE` in `PluginConfig.json`, because it saves the pitch background
-  page copies and the layouts note in `EXPORT/SNSoccer/`. The menu asks for them when it
+  `FILE:WRITE` in `PluginConfig.json`, because it saves page backgrounds for
+  copies and the layouts note in `EXPORT/SNSoccer/`. The menu asks for them when it
   opens; choose **Always allow**, since "this time only" lapses when the
-  plugin closes. Without them, Copy and Pitch pages are held back and the menu
+  plugin closes. Without them, Copy and Save are held back and the menu
   offers to ask again. Placing, moving and saving layouts don't need them. The
   floating button separately needs Android's "Display over other apps" for
   the plugin host.
@@ -76,6 +84,9 @@ button that stays out of the way while you write.
   would be kept as elements or a sticker (`saveStickerByLasso`), shown in the
   palette as a thumbnail, and placed by copying its elements to where it's
   dropped; its handle and tag would work as the built-in pieces' do.
+- **Pitch pages.** A menu action adding a page with a blank pitch as its
+  background was taken out of this version: it didn't work on the device.
+  The pitch drawing (`PitchSheet`, `capture.ts`) is still here for it.
 - **Turned pages.** Placing and moving on a rotated screen, once the
   screen-to-page mapping is measured on a device.
 
@@ -84,13 +95,13 @@ button that stays out of the way while you write.
 | Path | What it is |
 |---|---|
 | `index.js` | Registers the menu, starts the button's controller, adds the NOTE toolbar button |
-| `App.tsx` | The menu: copy, layouts, pitch pages, button setup, pitch preparation |
+| `App.tsx` | The menu: button setup, copy, layouts |
 | `android/.../palette/` | The button, palette and piece handles in Kotlin, each a small system overlay window (`SoccerPaletteModule`, registered in `MainApplication`) |
 | `src/palette/controller.ts` | Turns button events into page edits, one at a time, and keeps the handles on the page showing |
 | `src/layouts/layoutStore.ts` | The saved-layouts list in AsyncStorage; the pages themselves are in the layouts note |
-| `src/page/pageOps.ts` | Place, move, remove and replace pieces; copy a page; add a pitch page; save to and load from the layouts note |
+| `src/page/pageOps.ts` | Place, move, remove and replace pieces; copy a page; save to and load from the layouts note |
 | `src/page/pieceShapes.ts` | Each piece as note geometry, and the `userData` tag that identifies it |
-| `src/page/capture.ts`, `src/components/PitchSheet.tsx` | Drawing and saving the pitch background |
+| `src/page/capture.ts`, `src/components/PitchSheet.tsx` | Drawing the pitch (used by the preview; for pitch pages later) |
 
 **Why the pen can still write around the button.** Each window is only as big
 as what it draws: the button, the open palette, and one invisible *handle*
@@ -214,13 +225,22 @@ The Kotlin was compiled against the Android framework and React Native
   paints the plugin's window white regardless, the card still works; only the
   see-through part is lost.
 - **File permission.** The menu's first open should show the host's
-  permission dialog for file access. After "Always allow", Copy page and Add
-  a pitch page should work from the background once the menu closes. Check
-  that "this time only" still covers that close.
-- **The pen on the handles.** Modulanner's button takes the pen, so the
-  handles should too. Check that dragging a piece with the pen moves it
-  without leaving a stroke, and that writing right next to a piece still
-  writes. The handle is 1.15 times the piece's size.
+  permission dialog for file access. After "Always allow", Copy page and
+  Save should work from the background once the menu closes. Check that
+  "this time only" still covers that close.
+- **Drops.** A dropped piece should appear where it's let go. If it
+  vanishes, the log says how far it got: `[snsoccer] drop: … at screen`,
+  then `drop: placed …` once it's on the page. A message on screen says what
+  went wrong, and if the note never answers, the plugin gives up after ten
+  seconds and says so, rather than silently holding up every later drop.
+- **The pen lock.** Drag the button and a piece with the pen: `SoccerPalette`
+  should log `pen lock: plugin state 1` then `0`, `[snsoccer] pen locked` /
+  `unlocked`, and no line should be left behind (`pen: removed … stroke(s)`
+  when one got through and was erased). If the menu flashes up during a drag,
+  or the lock logs `no pluginApp field` / `no showPluginView(int)`, switch
+  the lock off in the menu; the erasing still works without it.
+- **Writing next to a piece** still writes. The handle is 1.15 times the
+  piece's size.
 - **Pieces look right.** Geometry `penWidth` units aren't documented. The
   pieces use 300, and their solid shapes are nested outlines 3px apart. If
   they come out hairline or blobby, tune `PIECE_PEN.width` in
@@ -230,8 +250,6 @@ The Kotlin was compiled against the Android framework and React Native
 - **Moving and removing find the pieces.** Check the log for
   `insertPageElements` / `batchUpdatePageElements` results, and whether
   `userData` survives (if not, the AsyncStorage fallback takes over).
-- **The Pieces layer** on new pitch pages (`insertLayer`), and that pieces
-  land on it.
 - **Copy page** carries drawings over (`insertElements` with elements read
   from the source page).
 - **Rotation.** Placing and moving are limited to the upright screen for now,

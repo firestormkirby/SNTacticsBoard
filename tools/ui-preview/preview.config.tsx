@@ -115,7 +115,7 @@ const config: PreviewConfig = {
     {
       id: 'blank-note',
       label: 'Blank note',
-      note: 'An ordinary page with the button up. Place pieces anywhere, or hold the button and add a pitch page.',
+      note: 'An ordinary page with the button up. Place pieces anywhere, draw, then hold the button to save the page as a layout.',
       panel: 'closed',
       storage: BUTTON_ON,
     },

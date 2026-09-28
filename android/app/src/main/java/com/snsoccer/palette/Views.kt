@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
+import android.graphics.RectF
 import android.view.View
 
 /**
@@ -103,5 +104,34 @@ class MaskView(context: Context) : View(context) {
 class GhostView(context: Context, var kind: String) : View(context) {
     override fun onDraw(canvas: Canvas) {
         Glyphs.draw(canvas, kind, width / 2f, height / 2f, width * 0.9f)
+    }
+}
+
+/** A short message in a bordered box, as the notice window shows it. */
+@SuppressLint("ViewConstructor")
+class NoticeView(context: Context, private val text: String, textSize: Float, private val pad: Int) :
+    View(context) {
+    private val ink = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xFF000000.toInt()
+        this.textSize = textSize
+    }
+    private val paper = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFFFFF.toInt() }
+    private val border = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xFF000000.toInt()
+        style = Paint.Style.STROKE
+        strokeWidth = 3f
+    }
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        val w = ink.measureText(text).toInt() + 2 * pad
+        val h = (ink.fontMetrics.let { it.bottom - it.top }).toInt() + 2 * pad
+        setMeasuredDimension(w, h)
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        val r = RectF(1.5f, 1.5f, width - 1.5f, height - 1.5f)
+        canvas.drawRoundRect(r, pad / 2f, pad / 2f, paper)
+        canvas.drawRoundRect(r, pad / 2f, pad / 2f, border)
+        canvas.drawText(text, pad.toFloat(), pad - ink.fontMetrics.top, ink)
     }
 }

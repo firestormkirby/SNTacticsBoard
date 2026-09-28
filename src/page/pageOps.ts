@@ -1,7 +1,6 @@
 /**
  * Everything the plugin does to a note page: place, move and remove pieces,
- * copy a page, add a pitch page, and save pages to and load them from the
- * layouts note.
+ * copy a page, and save pages to and load them from the layouts note.
  *
  * All of it runs with the plugin panel CLOSED (state 0), driven by events from
  * the floating palette. That is where Modulanner does its page work on
@@ -439,47 +438,6 @@ export async function tryJumpToPage(page: number): Promise<boolean> {
 export interface NewPage {
   page: number;
   jumped: boolean;
-}
-
-/** Give a page a Pieces layer. Best effort: pieces fall back to main. */
-async function addPiecesLayer(notePath: string, page: number): Promise<void> {
-  try {
-    check(
-      await PluginFileAPI.insertLayer(notePath, page, {
-        layerId: 1,
-        name: PIECES_LAYER_NAME,
-        isVisible: true,
-        isCurrentLayer: false,
-      }),
-      'insertLayer',
-    );
-  } catch (e) {
-    console.warn('[snsoccer] no Pieces layer on the new page, using main', e);
-  }
-}
-
-export class NoPitchError extends Error {}
-
-/** Add a page with the pitch as its background, after this one, and go to it. */
-export async function addPitchPage(ctx: PageContext): Promise<NewPage> {
-  const png = await pitchPngPath(ctx.pageSize);
-  if (!(await FileUtils.exists(png))) {
-    throw new NoPitchError(
-      'Open Soccer Board from the toolbar once to prepare the pitch.',
-    );
-  }
-  check(await PluginNoteAPI.saveCurrentNote(), 'saveCurrentNote');
-  const page = await nextPageIndex(ctx);
-  check(
-    await PluginFileAPI.insertNotePage({
-      notePath: ctx.notePath,
-      page,
-      template: png,
-    }),
-    'insertNotePage',
-  );
-  await addPiecesLayer(ctx.notePath, page);
-  return {page, jumped: await tryJumpToPage(page)};
 }
 
 // ── Template names ──────────────────────────────────────────────────────────

@@ -143,6 +143,9 @@ NativeModules.SoccerPalette = {
     state.tick = window.setInterval(() => emit({ type: 'tick' }), Math.max(300, ms));
   },
   stopTicking: stopTick,
+  // The native module draws this in its own window; the harness's toast will do.
+  notify: (message: string) =>
+    window.dispatchEvent(new CustomEvent('preview-toast', { detail: message })),
   addListener: () => {},
   removeListeners: () => {},
 };

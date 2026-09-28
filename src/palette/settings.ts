@@ -9,6 +9,8 @@ export interface PaletteSettings {
   y: number | null;
   /** Whether the palette was left open. */
   open: boolean;
+  /** Whether a pen drag on the button, palette or a piece locks the pen. */
+  penLock: boolean;
 }
 
 const KEY = 'snsoccer:palette:v2';
@@ -17,6 +19,7 @@ const DEFAULTS: PaletteSettings = {
   x: null,
   y: null,
   open: false,
+  penLock: true,
 };
 
 const num = (v: unknown) =>
@@ -31,6 +34,7 @@ export async function loadPaletteSettings(): Promise<PaletteSettings> {
       x: num(s.x),
       y: num(s.y),
       open: s.open === true,
+      penLock: s.penLock !== false,
     };
   } catch {
     return DEFAULTS;

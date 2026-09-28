@@ -125,7 +125,6 @@ it('asks for file access, and holds back the exports until it has it', async () 
   );
   expect(text(root)).toContain('Allow file access');
   expect(button(root, 'Copy to a new page').props.disabled).toBe(true);
-  expect(button(root, 'Add a pitch page').props.disabled).toBe(true);
 
   // Allowed the second time round.
   PluginManager.requestPermission.mockResolvedValue(2);

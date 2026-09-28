@@ -33,6 +33,8 @@ export interface ShowOptions {
   open?: boolean;
   /** Piece size on screen, in pixels. */
   pieceSize?: number;
+  /** Whether a pen drag on the windows locks the pen (default on). */
+  penLock?: boolean;
 }
 
 interface NativePalette {
@@ -45,6 +47,7 @@ interface NativePalette {
   setPieces(pieces: HandleSpec[], size: number): void;
   startTicking(intervalMs: number): void;
   stopTicking(): void;
+  notify(message: string): void;
 }
 
 /** Where a touch landed, in screen pixels, with what's needed to map it. */
@@ -66,7 +69,11 @@ export type PaletteEvent =
   | {type: 'longPress'}
   | {type: 'position'; x: number; y: number}
   | {type: 'open'; open: boolean}
-  | {type: 'tick'};
+  | {type: 'tick'}
+  /** The pen is locked (on) or unlocked (off) around a pen drag. */
+  | {type: 'penLock'; on: boolean}
+  /** A pen drag on one of the windows began (active) or ended. */
+  | {type: 'penDrag'; active: boolean};
 
 export const PALETTE_EVENT = 'SoccerPalette';
 
@@ -91,6 +98,15 @@ export const palette = {
     mod()?.setPieces(pieces, size),
   startTicking: (intervalMs: number): void => mod()?.startTicking(intervalMs),
   stopTicking: (): void => mod()?.stopTicking(),
+  /** A message the user sees even with the panel closed. */
+  notify: (message: string): boolean => {
+    const m = mod();
+    if (!m?.notify) {
+      return false;
+    }
+    m.notify(message);
+    return true;
+  },
 };
 
 export function onPaletteEvent(fn: (e: PaletteEvent) => void): () => void {

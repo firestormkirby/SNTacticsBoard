@@ -17,7 +17,7 @@
  * interleave two edits of the same page.
  */
 import {ToastAndroid} from 'react-native';
-import {PluginCommAPI, PluginManager} from 'sn-plugin-lib';
+import {PluginCommAPI, PluginFileAPI, PluginManager} from 'sn-plugin-lib';
 
 import {
   LayoutPiece,
@@ -29,12 +29,10 @@ import {
   saveLayout,
 } from '../layouts/layoutStore';
 import {
-  NoPitchError,
   NewPage,
   NotANoteError,
   PageContext,
   PagePiece,
-  addPitchPage,
   copyPage,
   describeLibraryPage,
   getContext,
@@ -50,13 +48,22 @@ import {
   tagLibraryPage,
 } from '../page/pageOps';
 import {PieceKind, Point, pieceSizeFor} from '../page/pieceShapes';
+import {answer, check} from '../sdk/response';
 import {PaletteEvent, ScreenPoint, onPaletteEvent, palette} from './bridge';
 import {loadPaletteSettings, updatePaletteSettings} from './settings';
 
 const TICK_MS = 1000;
 
+/**
+ * Tell the user something. With the panel closed the plugin is a background
+ * app, whose toasts Android may not show, so the native module draws the
+ * message in its own window; the toast is the fallback.
+ */
 function toast(message: string): void {
-  ToastAndroid.show(message, ToastAndroid.LONG);
+  log('message:', message);
+  if (panelOpen || !palette.notify(message)) {
+    ToastAndroid.show(message, ToastAndroid.LONG);
+  }
 }
 
 /**
@@ -204,6 +211,7 @@ export async function showButton(): Promise<boolean> {
   try {
     shownOk = await palette.show({
       open: s.open,
+      penLock: s.penLock,
       pieceSize: pieceSizeFor(screen?.width ?? 1404),
       ...(s.x !== null && s.y !== null ? {x: s.x, y: s.y} : {}),
     });
@@ -381,10 +389,6 @@ export async function copyThisPage(): Promise<string> {
   return `Copied to ${landedOn(await copyPage(await getContext()))}`;
 }
 
-export async function addPitch(): Promise<string> {
-  return `Pitch added as ${landedOn(await addPitchPage(await getContext()))}`;
-}
-
 /** Save this whole page as a layout, under a name. */
 export async function saveThisPage(name: string): Promise<string> {
   const ctx = await getContext();
@@ -489,24 +493,29 @@ export async function handle(e: PaletteEvent): Promise<void> {
       return;
 
     case 'drop': {
+      log('drop:', e.kind, 'at screen', Math.round(e.x), Math.round(e.y));
       const where = await atPage(e);
       if (where) {
-        await placePiece(where.ctx, e.kind as PieceKind, where.at);
+        const tag = await placePiece(where.ctx, e.kind as PieceKind, where.at);
+        log('drop: placed', tag.kind, tag.id, 'on page', where.ctx.page + 1);
         await syncHandles(where.ctx);
       }
       return;
     }
 
     case 'move': {
+      log('move:', e.id);
       const where = await atPage(e);
       if (where) {
-        await movePiece(where.ctx, e.id, where.at);
+        const tag = await movePiece(where.ctx, e.id, where.at);
+        log('move:', tag ? 'moved' : 'not found on the page');
         await syncHandles(where.ctx);
       }
       return;
     }
 
     case 'remove': {
+      log('remove:', e.id);
       const ctx = await getContext();
       await removePiece(ctx, e.id);
       await syncHandles(ctx);
@@ -516,23 +525,180 @@ export async function handle(e: PaletteEvent): Promise<void> {
 }
 
 function explain(e: unknown): string {
-  if (e instanceof NotANoteError || e instanceof NoPitchError) {
+  if (e instanceof NotANoteError) {
     return e.message;
   }
   return `Soccer Board: ${(e as Error)?.message ?? String(e)}`;
 }
 
-let queue: Promise<void> = Promise.resolve();
+// ── The work queue ──────────────────────────────────────────────────────────
+//
+// Note work runs one job at a time, in order. A call the note never answers
+// (one caught by the panel opening, say) would otherwise hold up every job
+// after it, and every drop would seem to vanish. JS timers are suspended with
+// the panel closed, so the native tick keeps the watchdog's time: a job still
+// running after WATCHDOG_TICKS ticks is given up on, and the queue moves on.
+// While the pen is locked the plugin's view is open, where note calls can
+// hang, so the queue waits for the unlock.
+
+const WATCHDOG_TICKS = 10;
+
+interface Job {
+  work: () => Promise<void>;
+  quiet: boolean;
+}
+
+const jobs: Job[] = [];
+let running: {ticks: number; giveUp: () => void} | null = null;
 
 function enqueue(work: () => Promise<void>, quiet = false): void {
-  queue = queue.then(work).catch(err => {
-    console.error('[snsoccer] palette work failed', err);
-    if (!quiet) {
-      toast(explain(err));
-    }
-    // Whatever happened, get the handles back in line with the page.
-    shown = null;
+  jobs.push({work, quiet});
+  runJobs();
+}
+
+function runJobs(): void {
+  if (running || penLocked) {
+    return;
+  }
+  const job = jobs.shift();
+  if (!job) {
+    return;
+  }
+  let giveUp = () => {};
+  const gaveUp = new Promise<'gave up'>(done => {
+    giveUp = () => done('gave up');
   });
+  const me = {ticks: 0, giveUp};
+  running = me;
+  Promise.race([job.work().then(() => 'done' as const), gaveUp])
+    .then(outcome => {
+      if (outcome === 'gave up') {
+        log('work: gave up waiting on the note');
+        busyTicks = 0;
+        shown = null;
+        if (!job.quiet) {
+          toast("The note didn't answer. Please try again.");
+        }
+      }
+    })
+    .catch(err => {
+      console.error('[snsoccer] palette work failed', err);
+      if (!job.quiet) {
+        toast(explain(err));
+      }
+      // Whatever happened, get the handles back in line with the page.
+      shown = null;
+    })
+    .finally(() => {
+      if (running === me) {
+        running = null;
+      }
+      runJobs();
+    });
+}
+
+/** Each native tick: count against the running job. */
+function watchdog(): void {
+  if (running && ++running.ticks >= WATCHDOG_TICKS) {
+    running.giveUp();
+  }
+}
+
+// ── The pen ─────────────────────────────────────────────────────────────────
+//
+// A pen drag on the button, the palette or a piece would also write into the
+// note (the digitizer writes whatever window the pen is over). Two defences:
+//  1. The native module locks the pen for the drag (see SoccerPaletteModule),
+//     which opens the plugin's view in the background; while it's locked the
+//     menu stays blank and the lifecycle's "start" is not the menu opening.
+//  2. Any stroke that got through anyway, begun before the lock landed, is
+//     deleted: the SDK's event_pen_up hands over each finished stroke, and one
+//     that ends during a pen drag, or just after, came from the drag.
+
+let penLocked = false;
+let penDrag = {active: false, endedAt: 0};
+const PEN_STROKE_GRACE_MS = 2500;
+const TYPE_STROKE = 0;
+const lockListeners = new Set<(locked: boolean) => void>();
+
+export function isPenLocked(): boolean {
+  return penLocked;
+}
+
+/** For the menu, which keeps out of sight while the pen is locked. */
+export function onPenLock(fn: (locked: boolean) => void): () => void {
+  lockListeners.add(fn);
+  return () => {
+    lockListeners.delete(fn);
+  };
+}
+
+function setPenLocked(on: boolean): void {
+  if (penLocked === on) {
+    return;
+  }
+  penLocked = on;
+  log('pen', on ? 'locked' : 'unlocked');
+  for (const fn of lockListeners) {
+    fn(on);
+  }
+  if (!on) {
+    // The lock opened our view; put it away before any note work.
+    PluginManager.closePluginView();
+    runJobs();
+  }
+}
+
+function fromPenDrag(): boolean {
+  return penDrag.active || Date.now() - penDrag.endedAt < PEN_STROKE_GRACE_MS;
+}
+
+/** Delete strokes the pen drew while dragging: only strokes, only these. */
+async function removeDragStrokes(nums: number[]): Promise<void> {
+  const ctx = await getContext();
+  const els = answer<
+    Array<{
+      type?: number;
+      numInPage?: number;
+      layerNum?: number;
+      recycle?: () => void;
+    }>
+  >(await PluginFileAPI.getElements(ctx.page, ctx.notePath), 'getElements');
+  const byLayer = new Map<number, number[]>();
+  for (const el of els) {
+    if (el.type === TYPE_STROKE && nums.includes(el.numInPage ?? -1)) {
+      const layer = el.layerNum ?? 0;
+      byLayer.set(layer, [...(byLayer.get(layer) ?? []), el.numInPage!]);
+    }
+    el.recycle?.();
+  }
+  for (const [layer, list] of byLayer) {
+    check(
+      await PluginCommAPI.deletePageElements(
+        [...list].sort((a, b) => b - a),
+        ctx.page,
+        layer,
+      ),
+      'deletePageElements',
+    );
+    log('pen: removed', list.length, 'stroke(s) drawn by a drag');
+  }
+}
+
+function onPenUp(data: unknown): void {
+  if (!fromPenDrag()) {
+    return;
+  }
+  const list = (Array.isArray(data) ? data : [data]) as Array<{
+    type?: number;
+    numInPage?: number;
+  }>;
+  const nums = list
+    .filter(el => el?.type === TYPE_STROKE && typeof el.numInPage === 'number')
+    .map(el => el.numInPage!);
+  if (nums.length > 0) {
+    enqueue(() => removeDragStrokes(nums), true);
+  }
 }
 
 let stop: (() => void) | null = null;
@@ -553,6 +719,9 @@ export function startPaletteController(): void {
   const life = (PluginManager as any).registerPluginLifeListener?.({
     onMsg(data: {state?: number} | undefined) {
       if (data?.state === LIFE_START) {
+        if (penLocked) {
+          return; // the pen lock opening our view, not the menu
+        }
         panelOpened();
       } else if (data?.state === LIFE_STOP) {
         panelClosed().catch(e => log('button: could not come up', e));
@@ -560,10 +729,29 @@ export function startPaletteController(): void {
       }
     },
   });
+  const penUp = (PluginManager as any).registerEventListener?.(
+    'event_pen_up',
+    1,
+    {onMsg: onPenUp},
+  );
   const events = onPaletteEvent(event => {
+    // Pen events change state at once; they aren't note work.
+    if (event.type === 'penLock') {
+      setPenLocked(event.on);
+      return;
+    }
+    if (event.type === 'penDrag') {
+      penDrag = event.active
+        ? {active: true, endedAt: 0}
+        : {active: false, endedAt: Date.now()};
+      return;
+    }
+    if (event.type === 'tick') {
+      watchdog();
+    }
     // A tick that finds the last one still running just skips: they are only
     // a check, and piling them up would lag every real edit behind them.
-    if (event.type === 'tick' && busyTicks > 0) {
+    if (event.type === 'tick' && (busyTicks > 0 || penLocked)) {
       return;
     }
     if (event.type === 'tick') {
@@ -582,6 +770,7 @@ export function startPaletteController(): void {
   stop = () => {
     events();
     life?.remove?.();
+    penUp?.remove?.();
   };
   loadPaletteSettings()
     .then(s => (s.visible && !panelOpen ? showButton() : false))
@@ -598,4 +787,8 @@ export function stopPaletteController(): void {
   busyTicks = 0;
   problem = null;
   problemDetail = '';
+  jobs.length = 0;
+  running = null;
+  penLocked = false;
+  penDrag = {active: false, endedAt: 0};
 }

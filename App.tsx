@@ -14,9 +14,8 @@
  * Anything that changes the note runs after the menu closes, because SDK
  * calls can deadlock while it is open (see src/palette/controller.ts).
  */
-import React, {useCallback, useEffect, useRef, useState} from 'react';
+import React, {useCallback, useEffect, useState} from 'react';
 import {
-  Dimensions,
   Pressable,
   ScrollView,
   StatusBar,
@@ -28,42 +27,34 @@ import {
 
 import {DIM, INK, NET, PAPER} from './src/components/colors';
 import PieceGlyph from './src/components/PieceGlyph';
-import PitchSheet from './src/components/PitchSheet';
 import {
   SavedLayout,
   deleteLayout,
   hasPage,
   listLayouts,
 } from './src/layouts/layoutStore';
-import {hasPitch, pageSizeForScreen, savePitch} from './src/page/capture';
 import {PieceKind} from './src/page/pieceShapes';
 import {ensureFileAccess} from './src/sdk/filePermissions';
 import {palette} from './src/palette/bridge';
 import {
-  addPitch,
   buttonProblem,
   closePanelThen,
   copyThisPage,
+  isPenLocked,
   lastButtonError,
   loadLayoutAsPage,
   loadLayoutHere,
   onMenuOpen,
+  onPenLock,
   panelOpened,
   saveThisPage,
   ButtonProblem,
   setButtonOn as switchButton,
 } from './src/palette/controller';
-import {loadPaletteSettings} from './src/palette/settings';
-
-type PitchState = 'checking' | 'making' | 'ready' | 'failed' | 'blocked';
-
-/** Let the pitch sheet reach the screen before it is photographed. */
-const nextFrames = () =>
-  new Promise<void>(done =>
-    requestAnimationFrame(() =>
-      requestAnimationFrame(() => setTimeout(done, 80)),
-    ),
-  );
+import {
+  loadPaletteSettings,
+  updatePaletteSettings,
+} from './src/palette/settings';
 
 const LEGEND: Array<{kind: PieceKind; label: string}> = [
   {kind: 'attacker', label: 'Team X'},
@@ -86,49 +77,32 @@ const close = () => closePanelThen(async () => {});
 export default function App(): React.JSX.Element {
   const [permission, setPermission] = useState<boolean | null>(null);
   const [buttonOn, setButtonOn] = useState(false);
-  const [pitch, setPitch] = useState<PitchState>('checking');
   /** Shared-storage access: null while asking. */
   const [files, setFiles] = useState<boolean | null>(null);
   const [layouts, setLayouts] = useState<SavedLayout[]>([]);
   const [name, setName] = useState('');
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
-  const screen = useRef(Dimensions.get('screen')).current;
-  const pageSize = useRef(
-    pageSizeForScreen(screen.width, screen.height),
-  ).current;
-  const sheetRef = useRef<View>(null);
-  const capturing = useRef(false);
   // Why the button didn't come up last time, if it didn't.
   const [problem, setProblem] = useState<ButtonProblem | null>(null);
 
   const refresh = useCallback(async () => {
     setProblem(buttonProblem());
     setPermission(await palette.canDrawOverlays());
-    setButtonOn((await loadPaletteSettings()).visible);
+    const settings = await loadPaletteSettings();
+    setButtonOn(settings.visible);
+    setPenLock(settings.penLock);
     setLayouts(await listLayouts());
   }, []);
 
   /**
-   * File access first: the pitch background and page copies are saved in
-   * EXPORT, which the plugin can't touch until it is allowed. Asked here,
-   * with the menu open, because the host can't show its dialog otherwise.
+   * Page copies and saved layouts are kept in EXPORT, which the plugin can't
+   * touch until it is allowed. Asked here, with the menu open, because the
+   * host can't show its dialog otherwise.
    */
   const askForFiles = useCallback(async () => {
-    const ok = await ensureFileAccess();
-    setFiles(ok);
-    if (!ok) {
-      setPitch('blocked');
-      return;
-    }
-    setPitch('checking');
-    try {
-      setPitch((await hasPitch(pageSize)) ? 'ready' : 'making');
-    } catch (e) {
-      console.warn('[snsoccer] could not check the pitch', e);
-      setPitch('making');
-    }
-  }, [pageSize]);
+    setFiles(await ensureFileAccess());
+  }, []);
 
   useEffect(() => {
     // Every opening, not just this first one: the tree stays mounted.
@@ -137,24 +111,23 @@ export default function App(): React.JSX.Element {
       askForFiles();
     });
     // Opened from the toolbar rather than the button: take the button down.
-    panelOpened();
+    // Unless the pen lock opened the view mid-drag: that's not the menu.
+    if (!isPenLocked()) {
+      panelOpened();
+    }
     return off;
   }, [askForFiles, refresh]);
 
-  const onSheetLayout = useCallback(async () => {
-    if (capturing.current || !sheetRef.current) {
-      return;
-    }
-    capturing.current = true;
-    try {
-      await nextFrames();
-      await savePitch(sheetRef.current, pageSize);
-      setPitch('ready');
-    } catch (e) {
-      console.error('[snsoccer] could not make the pitch', e);
-      setPitch('failed');
-    }
-  }, [pageSize]);
+  // While the pen is locked for a drag, the host has our view open; keep it
+  // empty and see-through, so the note and the drag carry on as they were.
+  const [penLocked, setPenLocked] = useState(isPenLocked());
+  useEffect(() => onPenLock(setPenLocked), []);
+
+  const [penLock, setPenLock] = useState(true);
+  const togglePenLock = useCallback(async (on: boolean) => {
+    setPenLock(on);
+    await updatePaletteSettings({penLock: on});
+  }, []);
 
   const toggleButton = useCallback(async (on: boolean) => {
     setButtonOn(on);
@@ -184,18 +157,13 @@ export default function App(): React.JSX.Element {
     [confirmDelete],
   );
 
+  if (penLocked) {
+    return <View style={styles.blank} pointerEvents="none" />;
+  }
+
   return (
     <View style={styles.root}>
       <StatusBar barStyle="dark-content" backgroundColor={PAPER} />
-      {pitch === 'making' && (
-        <PitchSheet
-          ref={sheetRef}
-          width={screen.width}
-          height={screen.height}
-          onLayout={onSheetLayout}
-        />
-      )}
-
       {/* Tapping the page around the menu closes it, as in Modulanner. */}
       <Pressable
         style={StyleSheet.absoluteFill}
@@ -232,14 +200,26 @@ export default function App(): React.JSX.Element {
                 onCheckAgain={refresh}
               />
             )}
+            <View style={styles.setting}>
+              <Text style={[styles.para, styles.settingText]}>
+                Stop the pen writing while it drags the button or a piece. The
+                screen may flash as the pen is locked and unlocked; any line
+                that still gets drawn is erased after the drop.
+              </Text>
+              <Toggle
+                value={penLock}
+                onValueChange={togglePenLock}
+                accessibilityLabel="Lock the pen while dragging"
+              />
+            </View>
           </Section>
 
           {files === false && (
             <Section title="File access">
               <Text style={styles.para}>
-                Soccer Board saves the pitch background and page copies in the
-                EXPORT folder, so it needs permission to read and write files.
-                Choose "Always allow" so it doesn't ask each time.
+                Soccer Board saves page copies and saved layouts in the EXPORT
+                folder, so it needs permission to read and write files. Choose
+                "Always allow" so it doesn't ask each time.
               </Text>
               <View style={styles.row}>
                 <Button
@@ -346,26 +326,6 @@ export default function App(): React.JSX.Element {
                 ))}
               </>
             )}
-          </Section>
-
-          <Section title="Pitch pages">
-            <Text style={styles.para}>
-              {pitch === 'ready'
-                ? 'Adds a new page after this one with a blank pitch as its background, goals at the top and bottom, and goes to it.'
-                : pitch === 'failed'
-                ? "The pitch background couldn't be prepared. Close and reopen Soccer Board to try again."
-                : pitch === 'blocked'
-                ? 'Needs file access to save the pitch background.'
-                : 'Preparing the pitch background…'}
-            </Text>
-            <View style={styles.row}>
-              <Button
-                label="Add a pitch page"
-                primary
-                disabled={pitch !== 'ready'}
-                onPress={() => closePanelThen(addPitch)}
-              />
-            </View>
           </Section>
 
           <Section title="Pieces">
@@ -539,8 +499,8 @@ function Button({
 
 const styles = StyleSheet.create({
   // A popout rather than a full screen: the root is see-through, so the note
-  // shows around the card (Modulanner's panel does the same). While the
-  // pitch background is first being drawn it shows there too, briefly.
+  // shows around the card (Modulanner's panel does the same).
+  blank: {flex: 1, backgroundColor: 'transparent'},
   root: {
     flex: 1,
     backgroundColor: 'transparent',

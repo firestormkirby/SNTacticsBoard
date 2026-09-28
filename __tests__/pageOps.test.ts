@@ -22,13 +22,10 @@ jest.mock('sn-plugin-lib', () => ({
 }));
 
 import {
-  NoPitchError,
   NotANoteError,
-  addPitchPage,
   copyPage,
   getContext,
   movePiece,
-  pitchPngPath,
   placePiece,
   readPieces,
   removePiece,
@@ -124,21 +121,11 @@ describe('pages', () => {
     expect(p.y).toBeLessThan(ctx.pageSize.height);
   });
 
-  it('adds a pitch page after this one, with a Pieces layer, and goes there', async () => {
-    const ctx = await getContext();
-    await expect(addPitchPage(ctx)).rejects.toBeInstanceOf(NoPitchError);
-
-    mockNote.state.files.add(await pitchPngPath(ctx.pageSize));
-    expect(await addPitchPage(ctx)).toEqual({page: 1, jumped: true});
-    expect(mockNote.state.current).toBe(1);
-    expect(mockNote.state.pages[1].template).toMatch(/pitch-1404x1872\.png$/);
-    expect(mockNote.state.pages[1].layers.map(l => l.name)).toContain('Pieces');
-
-    // Pieces placed there go on the Pieces layer.
-    const onPitch = await getContext();
-    await placePiece(onPitch, 'attacker', {x: 500, y: 500});
+  it('puts pieces on the Pieces layer where a page has one', async () => {
+    mockNote.state.pages[0].layers.push({layerId: 1, name: 'Pieces'});
+    await placePiece(await getContext(), 'attacker', {x: 500, y: 500});
     expect(
-      new Set(mockNote.state.pages[1].elements.map(e => e.layerNum)),
+      new Set(mockNote.state.pages[0].elements.map(e => e.layerNum)),
     ).toEqual(new Set([1]));
   });
 

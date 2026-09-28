@@ -47,6 +47,17 @@ import kotlin.math.abs
  * by JS (src/palette/controller.ts), from one event stream, "SoccerPalette",
  * whose `type` says what happened.
  *
+ * PEN
+ *           On a Supernote the pen also writes into the note through the
+ *           digitizer, whatever window it's over, so a pen drag on these
+ *           windows would draw a line. While one lasts, the pen is locked the
+ *           way the Supernote plugin notes describe: the host's PluginApp is
+ *           put in state 1, which makes the Note app disable the pen
+ *           full-screen, and back in state 0 when the drag ends (reflection:
+ *           the SDK's own showPluginView has no state argument). JS is told
+ *           ("penLock", "penDrag") so it can keep its panel out of the way
+ *           and clean up any stroke that got through before the lock landed.
+ *
  * Details carried over from Modulanner's PlannerOverlayModule, which adapted
  * them from SuperDashboard by AgP42 (MIT, github.com/AgP42/SuperDashboard):
  * PixelFormat.TRANSLUCENT (an opaque overlay turns round chips into black
@@ -82,6 +93,12 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
         private var pieceSize = 64
         private var ticking = false
         private var tickRunnable: Runnable? = null
+        private var notice: View? = null
+        /** Whether pen drags lock the pen (a setting), and whether it's locked. */
+        private var penLockEnabled = true
+        private var penLocked = false
+        /** Give the host's state change time to land either way. */
+        private const val PEN_LOCK_SETTLE_MS = 200L
     }
 
     override fun getName(): String = NAME
@@ -217,6 +234,78 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
         }
     }
 
+    // ── The pen ─────────────────────────────────────────────────────────────
+
+    private fun isPen(e: MotionEvent): Boolean {
+        val t = e.getToolType(0)
+        return t == MotionEvent.TOOL_TYPE_STYLUS || t == MotionEvent.TOOL_TYPE_ERASER
+    }
+
+    /** PluginApp.showPluginView(int), reached through NativePluginManager. */
+    private fun setPluginState(state: Int): Boolean {
+        return try {
+            val manager = ctx.getNativeModule("NativePluginManager") ?: run {
+                Log.w(TAG, "pen lock: no NativePluginManager module")
+                return false
+            }
+            var cls: Class<*>? = manager.javaClass
+            var field: java.lang.reflect.Field? = null
+            while (cls != null && field == null) {
+                field = cls.declaredFields.firstOrNull { it.name == "pluginApp" }
+                cls = cls.superclass
+            }
+            val app = field?.let { it.isAccessible = true; it.get(manager) } ?: run {
+                Log.w(TAG, "pen lock: no pluginApp field")
+                return false
+            }
+            val show = app.javaClass.methods.firstOrNull {
+                it.name == "showPluginView" && it.parameterCount == 1 &&
+                    (it.parameterTypes[0] == Int::class.javaPrimitiveType ||
+                        it.parameterTypes[0] == Int::class.javaObjectType)
+            } ?: run {
+                Log.w(TAG, "pen lock: no showPluginView(int)")
+                return false
+            }
+            show.invoke(app, state)
+            Log.i(TAG, "pen lock: plugin state $state")
+            true
+        } catch (e: Throwable) {
+            Log.w(TAG, "pen lock: $e")
+            false
+        }
+    }
+
+    /** A pen drag on one of our windows has begun: lock the pen. */
+    private fun penDragStarted() {
+        emit("penDrag") { putBoolean("active", true) }
+        if (!penLockEnabled || penLocked) return
+        emit("penLock") { putBoolean("on", true) }
+        penLocked = true
+        // After the event, so JS knows why its view is about to open.
+        main.post {
+            if (!setPluginState(1)) {
+                penLocked = false
+                emit("penLock") { putBoolean("on", false) }
+            }
+        }
+    }
+
+    /** The drag has ended: unlock the pen, then carry on with `then`. */
+    private fun penDragEnded(then: () -> Unit) {
+        if (!penLocked) {
+            emit("penDrag") { putBoolean("active", false) }
+            then()
+            return
+        }
+        setPluginState(0)
+        penLocked = false
+        main.postDelayed({
+            emit("penLock") { putBoolean("on", false) }
+            emit("penDrag") { putBoolean("active", false) }
+            then()
+        }, PEN_LOCK_SETTLE_MS)
+    }
+
     // ── The palette's place ─────────────────────────────────────────────────
 
     /** Put the palette beside the button: below it, or above if there's no room. */
@@ -260,6 +349,7 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
         var downRawY = 0f
         var dragging = false
         var longPressed = false
+        var pen = false
         val longPress = Runnable {
             longPressed = true
             emit("longPress")
@@ -274,6 +364,7 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
                     downRawY = e.rawY
                     dragging = false
                     longPressed = false
+                    pen = isPen(e)
                     main.postDelayed(longPress, LONG_PRESS_MS)
                 }
                 MotionEvent.ACTION_MOVE -> {
@@ -282,6 +373,7 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
                     if (!dragging && (abs(dx) > dp(6f) || abs(dy) > dp(6f))) {
                         dragging = true
                         main.removeCallbacks(longPress)
+                        if (pen) penDragStarted()
                     }
                     if (dragging) {
                         val m = metrics()
@@ -295,9 +387,11 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
                     main.removeCallbacks(longPress)
                     when {
                         longPressed -> {} // the hold already opened the menu
-                        dragging -> emit("position") {
-                            putInt("x", p.x)
-                            putInt("y", p.y)
+                        dragging -> penDragEnded {
+                            emit("position") {
+                                putInt("x", p.x)
+                                putInt("y", p.y)
+                            }
                         }
                         else -> {
                             setOpen(!open)
@@ -305,7 +399,10 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
                         }
                     }
                 }
-                MotionEvent.ACTION_CANCEL -> main.removeCallbacks(longPress)
+                MotionEvent.ACTION_CANCEL -> {
+                    main.removeCallbacks(longPress)
+                    if (dragging) penDragEnded {}
+                }
             }
             true
         }
@@ -326,6 +423,8 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
                     downRawX = e.rawX
                     downRawY = e.rawY
                     kind?.let { showGhost(it, e.rawX, e.rawY) }
+                    // A piece is always dragged out, so lock at once.
+                    if (kind != null && isPen(e)) penDragStarted()
                 }
                 MotionEvent.ACTION_MOVE -> moveGhost(e.rawX, e.rawY)
                 MotionEvent.ACTION_UP -> {
@@ -334,13 +433,19 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
                     hideGhost()
                     if (k != null) {
                         val moved = abs(e.rawX - downRawX) > dp(8f) || abs(e.rawY - downRawY) > dp(8f)
-                        if (moved && !overControls(e.rawX, e.rawY)) {
-                            emit("drop") {
-                                putString("kind", k)
-                                putPoint(e.rawX, e.rawY, e.getToolType(0))
+                        val rawX = e.rawX
+                        val rawY = e.rawY
+                        val tool = e.getToolType(0)
+                        val over = overControls(rawX, rawY)
+                        penDragEnded {
+                            if (moved && !over) {
+                                emit("drop") {
+                                    putString("kind", k)
+                                    putPoint(rawX, rawY, tool)
+                                }
+                            } else if (!moved) {
+                                emit("tapPiece") { putString("kind", k) }
                             }
-                        } else if (!moved) {
-                            emit("tapPiece") { putString("kind", k) }
                         }
                     }
                     kind = null
@@ -348,6 +453,7 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
                 MotionEvent.ACTION_CANCEL -> {
                     t.pressed = null
                     hideGhost()
+                    if (kind != null) penDragEnded {}
                     kind = null
                 }
             }
@@ -394,6 +500,7 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
         var downRawX = 0f
         var downRawY = 0f
         var dragging = false
+        var pen = false
         h.setOnTouchListener { _, e ->
             val p = handles[h.id]?.second ?: return@setOnTouchListener false
             when (e.actionMasked) {
@@ -403,12 +510,14 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
                     downRawX = e.rawX
                     downRawY = e.rawY
                     dragging = false
+                    pen = isPen(e)
                 }
                 MotionEvent.ACTION_MOVE -> {
                     val dx = e.rawX - downRawX
                     val dy = e.rawY - downRawY
                     if (!dragging && (abs(dx) > dp(6f) || abs(dy) > dp(6f))) {
                         dragging = true
+                        if (pen) penDragStarted()
                         // Hide the piece the note is still drawing at its old
                         // spot, and let the handle carry a drawn copy.
                         val mask = MaskView(ctx)
@@ -430,12 +539,18 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
                 }
                 MotionEvent.ACTION_UP -> {
                     if (dragging) {
-                        if (overControls(e.rawX, e.rawY)) {
-                            emit("remove") { putString("id", h.id) }
-                        } else {
-                            emit("move") {
-                                putString("id", h.id)
-                                putPoint(p.x + p.width / 2f, p.y + p.height / 2f, e.getToolType(0))
+                        val over = overControls(e.rawX, e.rawY)
+                        val cx = p.x + p.width / 2f
+                        val cy = p.y + p.height / 2f
+                        val tool = e.getToolType(0)
+                        penDragEnded {
+                            if (over) {
+                                emit("remove") { putString("id", h.id) }
+                            } else {
+                                emit("move") {
+                                    putString("id", h.id)
+                                    putPoint(cx, cy, tool)
+                                }
                             }
                         }
                     }
@@ -449,6 +564,7 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
                         update(h, p)
                         h.carrying = false
                         clearMasks()
+                        penDragEnded {}
                     }
                 }
             }
@@ -508,6 +624,7 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
                     return@post
                 }
                 if (options.hasKey("pieceSize")) pieceSize = options.getDouble("pieceSize").toInt()
+                if (options.hasKey("penLock")) penLockEnabled = options.getBoolean("penLock")
                 val m = metrics()
                 if (button == null) {
                     sweepOrphans()
@@ -549,6 +666,10 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
     }
 
     private fun hideAll() {
+        if (penLocked) {
+            setPluginState(0)
+            penLocked = false
+        }
         hideGhost()
         clearMasks()
         handles.values.forEach { remove(it.first) }
@@ -616,6 +737,35 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
                 if (added) raiseControls()
             } catch (e: Exception) {
                 Log.e(TAG, "setPieces: ${e.message}", e)
+            }
+        }
+    }
+
+    /**
+     * A short message at the bottom of the screen, for a few seconds. Android
+     * may not show a background app's toast, and with the panel closed the
+     * plugin is one; an overlay window always shows.
+     */
+    @ReactMethod
+    fun notify(message: String) {
+        main.post {
+            try {
+                remove(notice)
+                val m = metrics()
+                val v = NoticeView(ctx, message, dp(18f).toFloat(), dp(18f))
+                val p = params(WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT, false)
+                p.gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+                p.y = m.heightPixels / 12
+                add(v, p)
+                notice = v
+                main.postDelayed({
+                    if (notice === v) {
+                        remove(v)
+                        notice = null
+                    }
+                }, 4000L)
+            } catch (e: Throwable) {
+                Log.w(TAG, "notify: $e")
             }
         }
     }
