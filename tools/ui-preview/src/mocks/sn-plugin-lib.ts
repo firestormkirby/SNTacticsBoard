@@ -74,8 +74,9 @@ const defaults: Record<string, Record<string, (...args: any[]) => any>> = {
     showPluginView: () => { setView(true); return ok(); },
     closePluginView: () => { setView(false); return ok(); },
     showToast: (msg: string) => { toast(msg); return ok(); },
-    hasPermission: () => ok(true),
-    requestPermission: () => ok(true),
+    // Plain numbers on devices, not APIResponse: 1 = held; 2 = always allowed.
+    hasPermission: () => Promise.resolve(1),
+    requestPermission: () => Promise.resolve(2),
   },
   /**
    * Page and element calls read and write the in-memory note (mocks/note.ts),

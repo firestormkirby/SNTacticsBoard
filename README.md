@@ -40,6 +40,15 @@ button that stays out of the way while you write.
 
   The first time it opens, the menu draws the pitch background.
 
+- **Permissions.** Soccer Board declares `plugin.permission.FILE:READ` and
+  `FILE:WRITE` in `PluginConfig.json`, because it saves the pitch background
+  and page copies in `EXPORT/SNSoccer/`. The menu asks for them when it
+  opens; choose **Always allow**, since "this time only" lapses when the
+  plugin closes. Without them, Copy and Pitch pages are held back and the menu
+  offers to ask again. Placing, moving and saving layouts don't need them. The
+  floating button separately needs Android's "Display over other apps" for
+  the plugin host.
+
 ## How it's built
 
 | Path | What it is |
@@ -152,6 +161,10 @@ The Kotlin was compiled against the Android framework and React Native
   plugin host, and stays over the note after the menu closes. Check whether
   it lingers over other apps after leaving the note; if it does, Hide the
   button in the menu puts it away.
+- **File permission.** The menu's first open should show the host's
+  permission dialog for file access. After "Always allow", Copy page and Add
+  a pitch page should work from the background once the menu closes. Check
+  that "this time only" still covers that close.
 - **The pen on the handles.** Modulanner's button takes the pen, so the
   handles should too. Check that dragging a piece with the pen moves it
   without leaving a stroke, and that writing right next to a piece still

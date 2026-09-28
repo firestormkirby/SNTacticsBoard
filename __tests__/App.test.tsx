@@ -82,3 +82,26 @@ it('shows the button by closing the menu', async () => {
   const {PluginManager} = require('sn-plugin-lib');
   expect(PluginManager.closePluginView).toHaveBeenCalled();
 });
+
+it('asks for file access, and holds back the exports until it has it', async () => {
+  const {PluginManager} = require('sn-plugin-lib');
+  PluginManager.hasPermission.mockResolvedValue(0);
+  PluginManager.requestPermission.mockResolvedValueOnce(0);
+  const root = await mount();
+  expect(PluginManager.requestPermission).toHaveBeenCalledWith(
+    'plugin.permission.FILE:READ',
+    expect.any(String),
+  );
+  expect(text(root)).toContain('Allow file access');
+  expect(button(root, 'Copy to a new page').props.disabled).toBe(true);
+  expect(button(root, 'Add a pitch page').props.disabled).toBe(true);
+
+  // Allowed the second time round.
+  PluginManager.requestPermission.mockResolvedValue(2);
+  await ReactTestRenderer.act(async () =>
+    button(root, 'Allow file access').props.onPress(),
+  );
+  expect(text(root)).not.toContain('Allow file access');
+  expect(button(root, 'Copy to a new page').props.disabled).toBe(false);
+  PluginManager.hasPermission.mockResolvedValue(1);
+});

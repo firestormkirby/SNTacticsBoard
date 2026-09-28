@@ -36,6 +36,7 @@ import {
 } from './src/layouts/layoutStore';
 import {hasPitch, pageSizeForScreen, savePitch} from './src/page/capture';
 import {PieceKind} from './src/page/pieceShapes';
+import {ensureFileAccess} from './src/sdk/filePermissions';
 import {palette} from './src/palette/bridge';
 import {
   addPitch,
@@ -51,7 +52,7 @@ import {
   updatePaletteSettings,
 } from './src/palette/settings';
 
-type PitchState = 'checking' | 'making' | 'ready' | 'failed';
+type PitchState = 'checking' | 'making' | 'ready' | 'failed' | 'blocked';
 
 /** Let the pitch sheet reach the screen before it is photographed. */
 const nextFrames = () =>
@@ -83,6 +84,8 @@ export default function App(): React.JSX.Element {
   const [permission, setPermission] = useState<boolean | null>(null);
   const [buttonOn, setButtonOn] = useState(false);
   const [pitch, setPitch] = useState<PitchState>('checking');
+  /** Shared-storage access: null while asking. */
+  const [files, setFiles] = useState<boolean | null>(null);
   const [layouts, setLayouts] = useState<SavedLayout[]>([]);
   const [name, setName] = useState('');
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
@@ -104,17 +107,33 @@ export default function App(): React.JSX.Element {
     setLayouts(await listLayouts());
   }, []);
 
+  /**
+   * File access first: the pitch background and page copies are saved in
+   * EXPORT, which the plugin can't touch until it is allowed. Asked here,
+   * with the menu open, because the host can't show its dialog otherwise.
+   */
+  const askForFiles = useCallback(async () => {
+    const ok = await ensureFileAccess();
+    setFiles(ok);
+    if (!ok) {
+      setPitch('blocked');
+      return;
+    }
+    setPitch('checking');
+    try {
+      setPitch((await hasPitch(pageSize)) ? 'ready' : 'making');
+    } catch (e) {
+      console.warn('[snsoccer] could not check the pitch', e);
+      setPitch('making');
+    }
+  }, [pageSize]);
+
   useEffect(() => {
     // Opened from the toolbar rather than the button: take the button down.
     panelOpened();
     refresh();
-    hasPitch(pageSize)
-      .then(ready => setPitch(ready ? 'ready' : 'making'))
-      .catch(e => {
-        console.warn('[snsoccer] could not check the pitch', e);
-        setPitch('making');
-      });
-  }, [pageSize, refresh]);
+    askForFiles();
+  }, [askForFiles, refresh]);
 
   const onSheetLayout = useCallback(async () => {
     if (capturing.current || !sheetRef.current) {
@@ -243,6 +262,23 @@ export default function App(): React.JSX.Element {
             )}
           </Section>
 
+          {files === false && (
+            <Section title="File access">
+              <Text style={styles.para}>
+                Soccer Board saves the pitch background and page copies in the
+                EXPORT folder, so it needs permission to read and write files.
+                Choose "Always allow" so it doesn't ask each time.
+              </Text>
+              <View style={styles.row}>
+                <Button
+                  label="Allow file access"
+                  primary
+                  onPress={askForFiles}
+                />
+              </View>
+            </Section>
+          )}
+
           <Section title="Copy this page">
             <Text style={styles.para}>
               A new page after this one with the background, your drawing and
@@ -253,6 +289,7 @@ export default function App(): React.JSX.Element {
               <Button
                 label="Copy to a new page"
                 primary
+                disabled={files !== true}
                 onPress={() => closePanelThen(copyThisPage)}
               />
             </View>
@@ -332,6 +369,8 @@ export default function App(): React.JSX.Element {
                 ? 'Add a page with a blank pitch after this one.'
                 : pitch === 'failed'
                 ? "The pitch background couldn't be prepared. Close and reopen Soccer Board to try again."
+                : pitch === 'blocked'
+                ? 'Needs file access to save the pitch background.'
                 : 'Preparing the pitch background…'}
             </Text>
             <View style={styles.row}>

@@ -18,6 +18,8 @@ jest.mock('sn-plugin-lib', () => {
       registerButton: jest.fn(() => Promise.resolve(true)),
       closePluginView: jest.fn(() => Promise.resolve(true)),
       showPluginView: jest.fn(() => Promise.resolve(true)),
+      hasPermission: jest.fn(() => Promise.resolve(1)),
+      requestPermission: jest.fn(() => Promise.resolve(2)),
     },
     PluginCommAPI: {
       getCurrentFilePath: jest.fn(() =>

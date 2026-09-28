@@ -7,5 +7,9 @@
   "pluginID": "yzcqk0vz6ecwbd9a",
   "pluginKey": "snsoccer",
   "jsMainPath": "index",
-  "author": "firestormkirby"
+  "author": "firestormkirby",
+  "uses-permissions": [
+    "plugin.permission.FILE:READ",
+    "plugin.permission.FILE:WRITE"
+  ]
 }
