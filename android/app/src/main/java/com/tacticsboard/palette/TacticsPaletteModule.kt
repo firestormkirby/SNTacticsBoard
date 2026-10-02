@@ -8,6 +8,7 @@ import android.graphics.Rect
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.Settings
 import android.util.DisplayMetrics
 import android.util.Log
@@ -121,6 +122,14 @@ class TacticsPaletteModule(private val ctx: ReactApplicationContext) :
         private const val HOVER_RELEASE_MS = 300L
         /** JS is editing the note, so a hover mustn't open our view now. */
         private var noteBusy = false
+        /**
+         * Until when (uptime ms) the Note app may still be redrawing after
+         * JS's last edit. Locking or unlocking the pen makes it reload the
+         * page too, and two reloads at once crash it (Bitmap.recycle in
+         * TransferModeView), so the pen isn't locked before then either.
+         */
+        private var noteQuietAt = 0L
+        private const val NOTE_SETTLE_MS = 700L
         /** A touch on one of our windows is under way. */
         private var touching = false
         /** Where the pen last lifted, until it hovers out of the window there. */
@@ -317,6 +326,11 @@ class TacticsPaletteModule(private val ctx: ReactApplicationContext) :
     private fun lockPen(why: String) {
         main.removeCallbacks(hoverRelease)
         if (!penLockEnabled || penLocked) return
+        if (noteBusy || SystemClock.uptimeMillis() < noteQuietAt) {
+            // A drag now goes unlocked; the strokes it draws are erased after.
+            Log.i(TAG, "pen lock: not now ($why): the note is redrawing")
+            return
+        }
         emit("penLock") { putBoolean("on", true) }
         penLocked = true
         Log.i(TAG, "pen lock: on ($why)")
@@ -345,7 +359,10 @@ class TacticsPaletteModule(private val ctx: ReactApplicationContext) :
         penLocked = false
         main.postDelayed({
             then()
-            emit("penLock") { putBoolean("on", false) }
+            // Locked again meanwhile: JS still has it as locked, rightly, and
+            // hears "off" when that lock lifts. Sent now, it would arrive
+            // after the new lock's "on" and leave JS thinking it's free.
+            if (!penLocked) emit("penLock") { putBoolean("on", false) }
         }, PEN_LOCK_SETTLE_MS)
     }
 
@@ -1222,7 +1239,12 @@ class TacticsPaletteModule(private val ctx: ReactApplicationContext) :
 
     @ReactMethod
     fun setBusy(busy: Boolean) {
-        main.post { noteBusy = busy }
+        main.post {
+            if (noteBusy && !busy) {
+                noteQuietAt = SystemClock.uptimeMillis() + NOTE_SETTLE_MS
+            }
+            noteBusy = busy
+        }
     }
 
     /** Emit "tick" every intervalMs, since JS timers stop with the panel closed. */

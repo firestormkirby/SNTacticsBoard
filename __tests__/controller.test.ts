@@ -658,6 +658,26 @@ describe('the pen', () => {
     ]);
   });
 
+  it('waits out the reload after an unlock even when it thought the pen free', async () => {
+    const waits: number[] = [];
+    (mockPalette as any).wait = jest.fn(async (ms: number) => {
+      waits.push(ms);
+    });
+    try {
+      startPaletteController();
+      await settle();
+      // A late "off", after the pen was already taken as free: the Note app
+      // still reloads for it, so the next edit waits.
+      emit({type: 'penLock', on: false});
+      emit({type: 'drop', kind: 'cone', ...at(300, 500)});
+      await settle();
+      expect(waits.length).toBeGreaterThan(0);
+      expect(Math.max(...waits)).toBeGreaterThan(400);
+    } finally {
+      delete (mockPalette as any).wait;
+    }
+  });
+
   it('erases a stroke the pen drew while dragging, and nothing else', async () => {
     startPaletteController();
     await settle();

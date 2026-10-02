@@ -1297,6 +1297,12 @@ export function onPenLock(fn: (locked: boolean) => void): () => void {
 }
 
 function setPenLocked(on: boolean): void {
+  if (!on) {
+    // Every unlock sets the Note app reloading the page, and an edit
+    // meanwhile crashes it: wait it out even when the lock was already
+    // thought lifted (a native "off" can arrive late or twice).
+    noteBusyFor(AFTER_UNLOCK_MS);
+  }
   if (penLocked === on) {
     return;
   }
@@ -1306,9 +1312,6 @@ function setPenLocked(on: boolean): void {
     fn(on);
   }
   if (!on) {
-    // The lock lifting can set the Note app reloading the page (it does
-    // when the lock cut a stroke short); an edit meanwhile crashes it.
-    noteBusyFor(AFTER_UNLOCK_MS);
     // The lock opened our view; put it away before any note work.
     PluginManager.closePluginView();
     runJobs();
