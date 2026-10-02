@@ -73,6 +73,14 @@ export async function getContext(): Promise<PageContext> {
     await PluginCommAPI.getCurrentPageNum(),
     'getCurrentPageNum',
   );
+  return contextAt(notePath, page);
+}
+
+/** The context of a page whose note and number are already known. */
+export async function contextAt(
+  notePath: string,
+  page: number,
+): Promise<PageContext> {
   const pageSize = answer<{width: number; height: number}>(
     await PluginFileAPI.getPageSize(notePath, page),
     'getPageSize',

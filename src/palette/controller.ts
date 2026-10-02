@@ -37,6 +37,7 @@ import {
   PagePiece,
   copyPage,
   describeLibraryPage,
+  contextAt,
   getContext,
   layoutKeyword,
   loadFromLibrary,
@@ -317,7 +318,8 @@ async function followPage(): Promise<void> {
     return;
   }
   if (shown?.notePath !== notePath || shown?.page !== page) {
-    await syncHandles(await getContext());
+    // The note and page were just read: only the page size is needed.
+    await syncHandles(await contextAt(notePath, page));
     ticksSinceRead = 0;
     return;
   }

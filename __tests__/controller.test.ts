@@ -169,8 +169,12 @@ describe('following the page', () => {
       template: 'x',
     });
     mockNote.state.current = 1;
+    const reads = jest.spyOn(mockNote.sdk.PluginCommAPI, 'getCurrentPageNum');
     await handle({type: 'tick'});
     expect(handles()).toEqual([]);
+    // The page the tick read is the one laid out: it isn't read twice.
+    expect(reads).toHaveBeenCalledTimes(1);
+    reads.mockRestore();
     mockNote.state.current = 0;
     await handle({type: 'tick'});
     expect(handles()).toHaveLength(1);
