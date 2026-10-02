@@ -388,7 +388,6 @@ export async function placePiece(
   alsoDelete: number[] = [],
   layer?: number,
 ): Promise<PagePiece> {
-  check(await PluginNoteAPI.saveCurrentNote(), 'saveCurrentNote');
   const tag: PieceTag = {kind, id: newPieceId(), ...clampToPage(ctx, at)};
   layer ??= await piecesLayer(ctx, true);
   const size = pieceSizeFor(ctx.pageSize.width);
@@ -422,7 +421,7 @@ export async function movePiece(
   id: string,
   to: Point,
 ): Promise<PieceTag | null> {
-  const pieces = await readPieces(ctx);
+  const pieces = await readPieces(ctx, {save: false});
   const piece = pieces.find(p => p.id === id);
   if (!piece) {
     return null;
@@ -473,7 +472,7 @@ export async function removePiece(
   ctx: PageContext,
   id: string,
 ): Promise<boolean> {
-  const pieces = await readPieces(ctx);
+  const pieces = await readPieces(ctx, {save: false});
   const piece = pieces.find(p => p.id === id);
   if (!piece) {
     return false;

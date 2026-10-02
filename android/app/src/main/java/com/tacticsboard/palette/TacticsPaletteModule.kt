@@ -100,6 +100,7 @@ class TacticsPaletteModule(private val ctx: ReactApplicationContext) :
         private var masks = mutableListOf<View>()
         private var ghost: GhostView? = null
         private var ghostParams: WindowManager.LayoutParams? = null
+        private val landedGhosts = mutableListOf<GhostView>()
         /** Piece size on screen, in pixels, as JS draws it on the page. */
         private var pieceSize = 64
         private var ticking = false
@@ -197,6 +198,7 @@ class TacticsPaletteModule(private val ctx: ReactApplicationContext) :
         handles.values.forEach { known.add(it.first) }
         known.addAll(masks)
         ghost?.let { known.add(it) }
+        known.addAll(landedGhosts)
         try {
             val cls = Class.forName("android.view.WindowManagerGlobal")
             val inst = cls.getMethod("getInstance").invoke(null)
@@ -715,7 +717,14 @@ class TacticsPaletteModule(private val ctx: ReactApplicationContext) :
                             // the note has drawn it (setPieces), or a while.
                             moveGhost(rawX, rawY)
                             val landed = ghost
-                            main.postDelayed({ if (ghost === landed) hideGhost() }, LANDING_TIMEOUT_MS)
+                            if (landed != null) {
+                                landedGhosts.add(landed)
+                                ghost = null
+                                ghostParams = null
+                                main.postDelayed({
+                                    if (landedGhosts.remove(landed)) remove(landed)
+                                }, LANDING_TIMEOUT_MS)
+                            }
                         } else {
                             hideGhost()
                         }
@@ -925,11 +934,12 @@ class TacticsPaletteModule(private val ctx: ReactApplicationContext) :
     private fun settleLanding() {
         val oldMasks = masks.toList()
         masks.clear()
-        val landed = ghost
+        val landed = landedGhosts.toList()
+        landedGhosts.clear()
         val carried = handles.values.map { it.first }.filter { it.carrying }.map { it to it.drags }
         main.postDelayed({
             oldMasks.forEach { remove(it) }
-            if (landed != null && ghost === landed) hideGhost()
+            landed.forEach { remove(it) }
             // Unless it's been picked up again since.
             carried.forEach { (h, drags) ->
                 if (h.drags == drags) {
@@ -1055,6 +1065,8 @@ class TacticsPaletteModule(private val ctx: ReactApplicationContext) :
         main.removeCallbacks(disarm)
         hideLoadList()
         hideGhost()
+        landedGhosts.forEach { remove(it) }
+        landedGhosts.clear()
         clearMasks()
         handles.values.forEach { remove(it.first) }
         handles.clear()
