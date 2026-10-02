@@ -1,10 +1,10 @@
-# SNSoccer: Soccer Board for Supernote
+# Tactics Board for Supernote
 
 A coach's whiteboard plugin for Supernote. Draw runs and passes on the note
 page with your pen, and drag players, cones and balls onto it from a floating
 button that stays out of the way while you write.
 
-![Soccer Board: a rondo drill on a pitch, with the floating button and its pieces](docs/board.png)
+![Tactics Board: a rondo drill, with the floating button and its pieces](docs/board.png)
 
 ## How it works
 
@@ -36,40 +36,50 @@ button that stays out of the way while you write.
   the erasing always happens.
 - **Pieces are real note shapes**, lines, circles and polygons drawn by the
   Note app. They're told apart by shape, not colour, for the greyscale screen,
-  and they stay on the page after the plugin closes. On a page with a layer
-  named "Pieces" they go on it, so the native lasso and eraser on the main
-  layer leave them alone.
-- **The menu** (hold the button, or open **Soccer Board** from the Note
+  and they stay on the page after the plugin closes. They go on a layer
+  named "Pieces", which the first drop on a page adds (while the page has one
+  of its three custom layers free; otherwise the main layer), so the pieces
+  and the drawing can be erased apart. Adding it doesn't change the layer
+  you're writing on. A piece placed before its page had the layer moves onto
+  it the next time it's moved.
+- **Each piece is one or two elements** (the X's bars cross): the Note app
+  takes ~60 ms to insert each, so the solid shapes are drawn as one line
+  that zigzags or spirals to fill them. A dropped piece stays on screen where
+  it landed until the note has drawn it.
+- **The menu** (hold the button, or open **Tactics Board** from the Note
   toolbar) is a popout, two thirds of the screen each way, with the note
-  still showing around it; tap outside it to close it. It has the two exports
-  and the setup:
+  still showing around it; tap outside it to close it. It has saving, the
+  saved layouts and the setup (Copy is on the palette):
 
   | Section | What it does |
   |---|---|
   | Floating button | The on/off toggle. Below it, what's stopping the button if something is: a build without its native code, or Android not allowing the plugin host to display over other apps (with a button to that setting). |
-  | Copy this page | Copies the page, background, drawing and pieces, to a new page after it, all still editable. Good for drill progressions. |
   | Save this page | Saves the whole page, background, drawing and pieces, under a name. A drawing with no pieces is fine: a base to start from. Saving under an existing name replaces it. |
-  | Saved layouts | **New page** adds a copy of the saved page after the one you're on. **Pieces here** swaps the pieces on this page for the saved ones and keeps your drawing; piece positions are kept as fractions of the page, so they land in the same places on any device. |
+  | Saved layouts | **New page** adds a copy of the saved page after the one you're on. The ▾ beside a layout lists its previous versions, with **Restore**; deleting a layout deletes them too. The heading's own ▾ folds the list away. |
+  | Storage | The size of `EXPORT/SNTacticsBoard/`, **Clean up now**, and **Clean up automatically** (after each Save, Load and Reset). Both ask for permission to delete files first. |
 
   New pages come after the one you're on. Where the firmware can't go to a
   page by itself (`jumpToPage` arrived with the 2026-08-24 plugin firmware),
   the message says which page it is so you can turn to it.
 
-- **Saved layouts live in a note**, `EXPORT/SNSoccer/Layouts.note`, one page
+- **Saved layouts live in a note**, `EXPORT/SNTacticsBoard/Layouts.note`, one page
   per layout, copied in and out the way Copy page copies. Each page is tagged
   with a keyword, `~BOARD:<template>:<name>`, and found by it:
-  `~BOARD:Soccer Field:Rondo 4v2` is "Rondo 4v2" on the plugin's pitch. The
-  template part is the name of the page's background: "Soccer Field" for the
-  pitch and pages copied from it, a built-in template's name ("Dot Grid"), or a
-  custom template's file name. The `~` sorts the tags after your own keywords.
+  `~BOARD:Futsal Court:Rondo 4v2` is "Rondo 4v2" on a page whose background
+  is "Futsal Court". The template part is the name of the page's background:
+  a built-in template's name ("Dot Grid") or a custom template's file name.
+  Previous versions are pages tagged `~OLD:<name>:<time>`. The `~` sorts the
+  tags after your own keywords.
 
   So the note can be opened, reordered and edited in the Note app. Each time
   the menu closes, the list catches up with it: a page deleted there drops off
   the list, and a page you tag `~BOARD:<template>:<name>` there joins it.
 
-- **Permissions.** Soccer Board declares `plugin.permission.FILE:READ` and
-  `FILE:WRITE` in `PluginConfig.json`, because it saves page backgrounds for
-  copies and the layouts note in `EXPORT/SNSoccer/`. The menu asks for them when it
+- **Permissions.** Tactics Board declares `plugin.permission.FILE:READ`,
+  `FILE:WRITE` and `FILE:DELETE` in `PluginConfig.json`, because it saves page
+  backgrounds for copies and the layouts note in `EXPORT/SNTacticsBoard/`, and
+  can clean them up. Delete is only asked for by a clean-up. The menu asks for
+  read and write when it
   opens; choose **Always allow**, since "this time only" lapses when the
   plugin closes. Without them, Copy and Save are held back and the menu
   offers to ask again. Placing, moving and saving layouts don't need them. The
@@ -84,9 +94,8 @@ button that stays out of the way while you write.
   would be kept as elements or a sticker (`saveStickerByLasso`), shown in the
   palette as a thumbnail, and placed by copying its elements to where it's
   dropped; its handle and tag would work as the built-in pieces' do.
-- **Pitch pages.** A menu action adding a page with a blank pitch as its
-  background was taken out of this version: it didn't work on the device.
-  The pitch drawing (`PitchSheet`, `capture.ts`) is still here for it.
+- **Field templates.** A set of field backgrounds for different sports, to
+  start a page from.
 - **Turned pages.** Placing and moving on a rotated screen, once the
   screen-to-page mapping is measured on a device.
 
@@ -95,13 +104,14 @@ button that stays out of the way while you write.
 | Path | What it is |
 |---|---|
 | `index.js` | Registers the menu, starts the button's controller, adds the NOTE toolbar button |
-| `App.tsx` | The menu: button setup, copy, layouts |
-| `android/.../palette/` | The button, palette and piece handles in Kotlin, each a small system overlay window (`SoccerPaletteModule`, registered in `MainApplication`) |
+| `App.tsx` | The menu: button setup, saving, layouts, storage |
+| `android/.../palette/` | The button, palette and piece handles in Kotlin, each a small system overlay window (`TacticsPaletteModule`, registered in `MainApplication`) |
 | `src/palette/controller.ts` | Turns button events into page edits, one at a time, and keeps the handles on the page showing |
 | `src/layouts/layoutStore.ts` | The saved-layouts list in AsyncStorage; the pages themselves are in the layouts note |
 | `src/page/pageOps.ts` | Place, move, remove and replace pieces; copy a page; save to and load from the layouts note |
 | `src/page/pieceShapes.ts` | Each piece as note geometry, and the `userData` tag that identifies it |
-| `src/page/capture.ts`, `src/components/PitchSheet.tsx` | Drawing the pitch (used by the preview; for pitch pages later) |
+| `src/page/boards.ts` | Named pages, versions, replacing a page in place, the page label |
+| `src/page/cleanup.ts` | Clean up: spare background PNGs and leftover layouts-note pages |
 
 **Why the pen can still write around the button.** Each window is only as big
 as what it draws: the button, the open palette, and one invisible *handle*
@@ -145,7 +155,7 @@ SDK 35, and React Native **0.79.2** (locked to the PluginHost runtime).
 
 ```bash
 npm install
-npm run build:plugin          # -> build/outputs/snsoccer.snplg
+npm run build:plugin          # -> build/outputs/tacticsboard.snplg
 ```
 
 `build:plugin` runs Gradle's autolinking step and then the template's
@@ -159,9 +169,33 @@ that fails on launch; running it a second time also fixes that.
 Install on the device:
 
 ```bash
-adb push build/outputs/snsoccer.snplg /storage/emulated/0/MyStyle/
+adb push build/outputs/tacticsboard.snplg /storage/emulated/0/MyStyle/
 # Then on the device: Settings → Apps → Plugins → Add Plugin
 ```
+
+### Device loop (Windows)
+
+Scripts adapted from
+[Ziv-Ink/supernote-plugin-template](https://github.com/Ziv-Ink/supernote-plugin-template)
+for Windows PowerShell 5.1. Point them at the device in a gitignored
+`devconfig.json` (a wifi `host:port` is connected automatically):
+
+```json
+{ "device": "192.168.86.52:5555" }
+```
+
+| Command | What it does |
+|---|---|
+| `npm run deploy` | Build, push to `MyStyle/` (skipped when unchanged), and install through the Plugin Manager by UI automation. `-- -SkipBuild` reuses the last build. |
+| `npm run run` | Open NOTE and launch Tactics Board from the toolbar. |
+| `npm run deploy:run` | Both in turn. |
+| `npm run logs` | Stream `TacticsPalette`, `ReactNativeJS`, `PluginHost` and `SNPlugin`. `-- -Clear`, `-- -Dump`. |
+
+The UI automation matches English labels. The template's `send` (a JS-only
+hot install through PluginHost's `plugin.action.DEBUG` broadcast) is left
+out: on PluginHost 1.00.26009090 the receiver reads the broadcast's extras
+and returns without installing anything, so every change goes through
+`deploy`.
 
 `PluginConfig.json` is committed with a fixed `pluginID`. Keep it unchanged
 once the plugin has been shared, because the device identifies plugins by that
@@ -173,7 +207,7 @@ ID.
 [sn-plugin-ui-preview](https://github.com/firestormkirby/sn-plugin-ui-preview)
 extended with a simulated note. It runs the real menu and the real controller
 against an in-memory note. A web stand-in for the native windows
-(`tools/ui-preview/soccer/WebPalette.tsx`) has the same sizes and rules and
+(`tools/ui-preview/tactics/WebPalette.tsx`) has the same sizes and rules and
 sends the same events as the Kotlin one. The mouse is the pen anywhere else on
 the page. Like a device's page, the simulated one has no toolbar: Page Up /
 Page Down turn the page and P opens the menu.
@@ -209,16 +243,16 @@ The Kotlin was compiled against the Android framework and React Native
   ```bash
   adb logcat -c
   # switch the button on, close the menu, wait a few seconds
-  adb logcat -d -s SoccerPalette:V ReactNativeJS:V
+  adb logcat -d -s TacticsPalette:V ReactNativeJS:V
   ```
 
-  `SoccerPalette` lines come from the native side (`canDrawOverlays`,
-  `show: button at …`); `[snsoccer]` lines from the JS side (`menu open`,
+  `TacticsPalette` lines come from the native side (`canDrawOverlays`,
+  `show: button at …`); `[tactics]` lines from the JS side (`menu open`,
   `menu closed`, `button: show -> …`). If neither appears, the build is
   missing the native module: check that the built `PluginConfig.json` lists
-  `com.snsoccer.palette.SoccerPalettePackage` in `reactPackages` and the
+  `com.tacticsboard.palette.TacticsPalettePackage` in `reactPackages` and the
   `.snplg` holds an `app.npk`.
-- **Saved layouts.** Save a page, check `EXPORT/SNSoccer/Layouts.note` gets a
+- **Saved layouts.** Save a page, check `EXPORT/SNTacticsBoard/Layouts.note` gets a
   page (`createNote` makes it the first time) with its `~BOARD:…` keyword in
   the Note app's keyword list, then New page brings it back.
 - **The popout menu.** The note should show around the menu. If the host
@@ -229,18 +263,19 @@ The Kotlin was compiled against the Android framework and React Native
   Save should work from the background once the menu closes. Check that
   "this time only" still covers that close.
 - **Drops.** A dropped piece should appear where it's let go. If it
-  vanishes, the log says how far it got: `[snsoccer] drop: … at screen`,
+  vanishes, the log says how far it got: `[tactics] drop: … at screen`,
   then `drop: placed …` once it's on the page. A message on screen says what
   went wrong, and if the note never answers, the plugin gives up after ten
   seconds and says so, rather than silently holding up every later drop.
-- **The pen lock.** Drag the button and a piece with the pen: `SoccerPalette`
-  should log `pen lock: plugin state 1` then `0`, `[snsoccer] pen locked` /
+- **The pen lock.** Drag the button and a piece with the pen: `TacticsPalette`
+  should log `pen lock: plugin state 1` then `0`, `[tactics] pen locked` /
   `unlocked`, and no line should be left behind (`pen: removed … stroke(s)`
   when one got through and was erased). If the menu flashes up during a drag,
   or the lock logs `no pluginApp field` / `no showPluginView(int)`, switch
   the lock off in the menu; the erasing still works without it.
-- **Writing next to a piece** still writes. The handle is 1.15 times the
-  piece's size.
+- **Writing next to a piece** still writes. A handle covers only the middle
+  of its piece (45% of the piece box for the ball, 65-70% for the others),
+  and grows to the whole piece only while it's carrying it.
 - **Pieces look right.** Geometry `penWidth` units aren't documented. The
   pieces use 300, and their solid shapes are nested outlines 3px apart. If
   they come out hairline or blobby, tune `PIECE_PEN.width` in

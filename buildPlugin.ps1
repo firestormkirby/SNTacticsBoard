@@ -1151,7 +1151,11 @@ function Main {
     $buildGeneratedDir = Join-Path $projectRoot 'build\generated'
     
     if (Test-Path $buildGeneratedDir) {
-        Write-ColorOutput "Detected build/generated directory already exists: $buildGeneratedDir" 'Yellow'
+        # Emptied every build: everything in it is made again below, and a
+        # leftover (an old <name>.bundle after a rename) would be packaged too,
+        # and could be the bundle the plugin host loads.
+        Get-ChildItem -Path $buildGeneratedDir -Force | Remove-Item -Recurse -Force
+        Write-ColorOutput "Emptied build/generated directory: $buildGeneratedDir" 'Yellow'
     } else {
         New-Item -ItemType Directory -Path $buildGeneratedDir -Force | Out-Null
         Write-ColorOutput "Created build/generated directory: $buildGeneratedDir" 'Green'

@@ -33,10 +33,26 @@ describe.each(PIECE_KINDS)('%s shapes', kind => {
   });
 });
 
+it('closes each triangle of the cone: polygons are drawn as open lines', () => {
+  const [cone] = shapesFor('cone', {x: 500, y: 700}, 60);
+  const pts = cone.type === 'GEO_polygon' ? cone.points : [];
+  expect(pts.length % 4).toBe(0);
+  for (let i = 0; i < pts.length; i += 4) {
+    expect(pts[i + 3]).toEqual(pts[i]);
+  }
+});
+
+it('keeps each piece to one element, two for the X', () => {
+  // The Note app takes ~60 ms per inserted element.
+  const count = (k: (typeof PIECE_KINDS)[number]) =>
+    shapesFor(k, {x: 500, y: 700}, 86).length;
+  expect(PIECE_KINDS.map(count)).toEqual([2, 1, 1, 1]);
+});
+
 it('draws the four pieces differently', () => {
   const sig = (k: (typeof PIECE_KINDS)[number]) =>
     shapesFor(k, {x: 0, y: 0}, 60)
-      .map(s => s.type)
+      .map(s => `${s.type}:${s.type === 'GEO_circle' ? 0 : s.points.length}`)
       .join();
   expect(new Set(PIECE_KINDS.map(sig)).size).toBe(4);
 });
@@ -46,7 +62,7 @@ it('round-trips tags and rejects anything else', () => {
   expect(parseTag(tagFor(tag))).toEqual(tag);
   expect(parseTag('')).toBeNull();
   expect(parseTag('planner:label')).toBeNull();
-  expect(parseTag('snsoccer:v1:dragon:x:1:2')).toBeNull();
+  expect(parseTag('tacticsboard:v1:dragon:x:1:2')).toBeNull();
   expect(parseTag(undefined)).toBeNull();
 });
 

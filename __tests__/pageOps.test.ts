@@ -22,15 +22,62 @@ jest.mock('sn-plugin-lib', () => ({
 }));
 
 import {
+  KEYWORD_MAX,
   NotANoteError,
   copyPage,
   getContext,
+  layoutKeyword,
   movePiece,
+  parseLayoutKeyword,
+  parseVersionKeyword,
+  shownTemplate,
   placePiece,
   readPieces,
   removePiece,
-  replacePieces,
+  versionKeyword,
 } from '../src/page/pageOps';
+
+describe('keywords', () => {
+  const long = 'Long name '.repeat(8);
+  const at = Date.UTC(2026, 8, 29, 13, 33, 0);
+
+  it("stay within the Note app's 52 characters", () => {
+    expect(KEYWORD_MAX).toBe(52);
+    expect(layoutKeyword(long, long).length).toBeLessThanOrEqual(KEYWORD_MAX);
+    expect(
+      layoutKeyword('User Futsal Court', 'Scratchpad').length,
+    ).toBeLessThanOrEqual(KEYWORD_MAX);
+    expect(versionKeyword(long, at).length).toBeLessThanOrEqual(KEYWORD_MAX);
+  });
+
+  it('keep a whole name of up to 24 characters', () => {
+    const name = 'Rondo 4v2 with two gates';
+    expect(name).toHaveLength(24);
+    expect(parseLayoutKeyword(layoutKeyword(long, name))?.name).toBe(name);
+  });
+
+  it('read versions back, old and new', () => {
+    expect(parseVersionKeyword(versionKeyword('Rondo', at))).toEqual({
+      name: 'Rondo',
+      savedAt: at,
+    });
+    expect(
+      parseVersionKeyword('~BOARD-OLD:Futsal Court:Rondo:20260929-133300'),
+    ).toEqual({
+      template: 'Futsal Court',
+      name: 'Rondo',
+      savedAt: new Date(2026, 8, 29, 13, 33, 0).getTime(),
+    });
+    expect(parseVersionKeyword('~BOARD:Futsal Court:Rondo')).toBeNull();
+  });
+
+  it("don't show a template name that's a render's file name", () => {
+    expect(shownTemplate('Layout Mun5n7t11qqa')).toBe('');
+    expect(shownTemplate('Page Mun5ngyw')).toBe('');
+    expect(shownTemplate('Futsal Court')).toBe('Futsal Court');
+    expect(shownTemplate('Page Layout')).toBe('Page Layout');
+  });
+});
 
 describe.each([
   ['firmware that keeps userData', false],
@@ -62,25 +109,6 @@ describe.each([
     expect(await removePiece(ctx, o.id)).toBe(true);
     pieces = await readPieces(ctx);
     expect(pieces.map(p => p.id)).toEqual([x.id]);
-  });
-
-  it('replaces every piece on the page, and only the pieces', async () => {
-    const ctx = await getContext();
-    mockNote.state.pages[0].elements.push({
-      type: 0,
-      numInPage: 900,
-      userData: '',
-    });
-    await placePiece(ctx, 'cone', {x: 100, y: 100});
-    await placePiece(ctx, 'ball', {x: 200, y: 200});
-    await replacePieces(ctx, [{kind: 'attacker', x: 500, y: 600}]);
-    const pieces = await readPieces(ctx);
-    expect(pieces.map(p => [p.kind, p.x, p.y])).toEqual([
-      ['attacker', 500, 600],
-    ]);
-    expect(
-      mockNote.state.pages[0].elements.some(e => e.numInPage === 900),
-    ).toBe(true);
   });
 
   it("leaves the user's own drawing alone", async () => {
@@ -140,7 +168,8 @@ describe('pages', () => {
 
     expect(await copyPage(ctx)).toEqual({page: 1, jumped: true});
     expect(mockNote.state.current).toBe(1);
-    expect(mockNote.state.pages[1].template).toMatch(/page-\d{8}-\d{6}\.png$/);
+    // Rendered to a PNG named for its template.
+    expect(mockNote.state.pages[1].template).toMatch(/\/White\.png$/);
     expect(mockNote.state.pages[1].elements.length).toBe(
       mockNote.state.pages[0].elements.length,
     );

@@ -1,5 +1,5 @@
 /**
- * Soccer Board in the browser.
+ * Tactics Board in the browser.
  *
  *   npm run preview:install   (once)
  *   npm run preview           -> http://localhost:5178
@@ -7,18 +7,18 @@
  * The note is simulated (src/NotePage.tsx): the mouse is the pen on the page,
  * PageUp / PageDown turn pages and P opens the plugin, standing in for the
  * Note app's own toolbar. The floating button is a web stand-in for the
- * native one (soccer/WebPalette.tsx) that drives the plugin's real
+ * native one (tactics/WebPalette.tsx) that drives the plugin's real
  * controller, so dragging a piece runs the same page code a device does.
  * Every SDK call is logged in the browser console.
  */
 import type { PreviewConfig, Scenario } from './src/config';
 import App from '../../App';
 import { handle, saveThisPage, startPaletteController } from '../../src/palette/controller';
-import PaletteOverlay, { setPaletteState } from './soccer/WebPalette';
-import { RONDO, preparePitchImage, seedDrill } from './soccer/seed';
+import PaletteOverlay, { setPaletteState } from './tactics/WebPalette';
+import { RONDO, seedDrill } from './tactics/seed';
 
 /** The button switched on, where index.js finds it at startup. */
-const BUTTON_ON = { 'snsoccer:palette:v2': { visible: true, x: null, y: null, open: true } };
+const BUTTON_ON = { 'tacticsboard:palette:v2': { visible: true, x: null, y: null, open: true } };
 
 const DAY = 24 * 60 * 60 * 1000;
 /** A layout saved before whole pages were: pieces only. */
@@ -45,20 +45,15 @@ const setups: Record<string, () => Promise<void> | void> = {
     await saveThisPage('Rondo 4v2');
     await handle({ type: 'tick' });
   },
-  'blank-note': async () => {
-    await preparePitchImage();
-  },
 };
 
 const allowed = new Set(['drill', 'menu', 'palette-ready', 'blank-note', 'not-a-note']);
 
 const config: PreviewConfig = {
-  name: 'Soccer Board',
+  name: 'Tactics Board',
   Panel: App,
   Overlay: PaletteOverlay,
   simulateNote: true,
-  // The panel photographs the pitch in the background; the result shows up
-  // as the pitch page itself, so the capture card would only be in the way.
   showCaptures: false,
 
   // What index.js does on a device, after the page is in place: the
@@ -89,17 +84,17 @@ const config: PreviewConfig = {
     {
       id: 'drill',
       label: 'Drawing a drill',
-      note: 'Tap the round button to show or hide the pieces. Drag one out to add it, drag any piece on the page to move it, drop it on the button to remove it. Hold the button for the menu. Drag anywhere else to draw; Page Up / Page Down turn the page.',
+      note: 'Tap the round button to show or hide the pieces. Drag one out to add it, drag any piece on the page to move it, drop it on the trash to remove it. Hold the button for the menu. Drag anywhere else to draw; Page Up / Page Down turn the page.',
       panel: 'closed',
       storage: BUTTON_ON,
     },
     {
       id: 'menu',
       label: 'The menu',
-      note: 'What holding the button opens. Save this page under a name; add a saved one as a new page, or put just its pieces here.',
+      note: 'What holding the button opens. Save this page under a name, or add a saved one as a new page.',
       storage: {
         ...BUTTON_ON,
-        'snsoccer:layouts:v1': SAVED,
+        'tacticsboard:layouts:v1': SAVED,
       },
     },
     {

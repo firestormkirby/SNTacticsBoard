@@ -71,10 +71,10 @@ it('refuses an empty name', async () => {
 });
 
 it('survives damaged storage', async () => {
-  await AsyncStorage.setItem('snsoccer:layouts:v1', '{nope');
+  await AsyncStorage.setItem('tacticsboard:layouts:v1', '{nope');
   expect(await listLayouts()).toEqual([]);
   await AsyncStorage.setItem(
-    'snsoccer:layouts:v1',
+    'tacticsboard:layouts:v1',
     JSON.stringify([
       {
         id: 'x',

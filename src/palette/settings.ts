@@ -11,15 +11,24 @@ export interface PaletteSettings {
   open: boolean;
   /** Whether a pen drag on the button, palette or a piece locks the pen. */
   penLock: boolean;
+  /** Whether a named page has its name written on it. */
+  pageLabel: boolean;
+  /** Whether EXPORT/SNTacticsBoard is cleaned up after each Save, Load, Reset. */
+  autoCleanup: boolean;
+  /** Whether the menu's Saved layouts list is open. */
+  layoutsOpen: boolean;
 }
 
-const KEY = 'snsoccer:palette:v2';
+const KEY = 'tacticsboard:palette:v2';
 const DEFAULTS: PaletteSettings = {
   visible: false,
   x: null,
   y: null,
   open: false,
   penLock: true,
+  pageLabel: true,
+  autoCleanup: false,
+  layoutsOpen: true,
 };
 
 const num = (v: unknown) =>
@@ -35,6 +44,9 @@ export async function loadPaletteSettings(): Promise<PaletteSettings> {
       y: num(s.y),
       open: s.open === true,
       penLock: s.penLock !== false,
+      pageLabel: s.pageLabel !== false,
+      autoCleanup: s.autoCleanup === true,
+      layoutsOpen: s.layoutsOpen !== false,
     };
   } catch {
     return DEFAULTS;
@@ -48,7 +60,7 @@ export async function updatePaletteSettings(
   try {
     await AsyncStorage.setItem(KEY, JSON.stringify(next));
   } catch (e) {
-    console.warn('[snsoccer] could not save palette settings', e);
+    console.warn('[tactics] could not save palette settings', e);
   }
   return next;
 }

@@ -19,5 +19,5 @@
     "resolveJsonModule": true,
     "types": ["vite/client", "node"]
   },
-  "include": ["src", "soccer", "preview.config.tsx", "vite.config.ts"]
+  "include": ["src", "tactics", "preview.config.tsx", "vite.config.ts"]
 }

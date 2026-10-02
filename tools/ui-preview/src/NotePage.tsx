@@ -55,6 +55,25 @@ function Shape({ el }: { el: MockElement }) {
       />
     );
   }
+  // A text box (type 500): its text in its rectangle, aligned as the note would.
+  const t = el.textBox as {
+    textContentFull?: string; fontSize?: number; textAlign?: number; textBold?: number;
+    textRect?: { left: number; top: number; right: number; bottom: number };
+  } | undefined;
+  if (el.type === 500 && t?.textRect && t.textContentFull) {
+    const { left, top, right } = t.textRect;
+    const size = t.fontSize ?? 32;
+    const anchor = t.textAlign === 1 ? 'middle' : t.textAlign === 2 ? 'end' : 'start';
+    const x = t.textAlign === 1 ? (left + right) / 2 : t.textAlign === 2 ? right : left;
+    return (
+      <text
+        x={x} y={top + size} fontSize={size} textAnchor={anchor}
+        fontWeight={t.textBold ? 'bold' : 'normal'} fontFamily="sans-serif" fill="#000"
+      >
+        {t.textContentFull}
+      </text>
+    );
+  }
   const g = el.geometry as (MockElement['geometry'] & { penWidth?: number }) | null | undefined;
   if (!g) return null;
   // Width in page pixels, assuming penWidth is in hundredths of a pixel (the

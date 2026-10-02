@@ -1,20 +1,18 @@
 /**
- * Soccer Board's menu: opened by holding the floating button, or from the
+ * Tactics Board's menu: opened by holding the floating button, or from the
  * Note toolbar.
  *
  * The drawing happens on the note page itself, with the Supernote pen. Pieces
  * come from the floating button (android/.../palette): tap it for the
  * palette, drag a piece onto the page, drag pieces on the page to move them.
  *
- * This menu switches the button on, and holds the two exports:
- *  1. Copy this page to a new page, with everything on it.
- *  2. Save this page under a name, to add again later as a new page, or to
- *     put just its pieces onto another page.
+ * This menu switches the button on, and saves this page under a name, to
+ * add again later as a new page. Copying a page is the palette's.
  *
  * Anything that changes the note runs after the menu closes, because SDK
  * calls can deadlock while it is open (see src/palette/controller.ts).
  */
-import React, {useCallback, useEffect, useState} from 'react';
+import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {
   Pressable,
   ScrollView,
@@ -26,28 +24,39 @@ import {
 } from 'react-native';
 
 import {DIM, INK, NET, PAPER} from './src/components/colors';
+import InfoIcon from './src/components/InfoIcon';
+import {z, zb} from './src/components/scale';
+import {INFO_TOPICS, InfoKey} from './src/components/infoTopics';
 import PieceGlyph from './src/components/PieceGlyph';
 import {
   SavedLayout,
+  SavedVersion,
   deleteLayout,
   hasPage,
   listLayouts,
+  listVersions,
 } from './src/layouts/layoutStore';
+import {formatBytes, storageUsed} from './src/page/cleanup';
+import {NAME_MAX, shownTemplate} from './src/page/pageOps';
 import {PieceKind} from './src/page/pieceShapes';
-import {ensureFileAccess} from './src/sdk/filePermissions';
+import {ensureDeleteAccess, ensureFileAccess} from './src/sdk/filePermissions';
 import {palette} from './src/palette/bridge';
 import {
   buttonProblem,
+  cleanUpNow,
   closePanelThen,
-  copyThisPage,
+  getPageName,
   isPenLocked,
   lastButtonError,
   loadLayoutAsPage,
-  loadLayoutHere,
   onMenuOpen,
   onPenLock,
   panelOpened,
+  restoreVersion,
   saveThisPage,
+  setAutoCleanup,
+  setPageLabelOn,
+  takeMenuFocus,
   ButtonProblem,
   setButtonOn as switchButton,
 } from './src/palette/controller';
@@ -68,8 +77,18 @@ const dateOf = (ms: number) => {
   const d = new Date(ms);
   return `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
 };
+const timeOf = (ms: number) => {
+  const d = new Date(ms);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getDate()} ${MONTHS[d.getMonth()]} ${p(d.getHours())}:${p(
+    d.getMinutes(),
+  )}`;
+};
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+/** Layout names match whatever their case, as saving does. */
+const key = (name: string) => name.trim().toLowerCase();
 
 /** Close the menu with nothing else to do. */
 const close = () => closePanelThen(async () => {});
@@ -82,6 +101,23 @@ export default function App(): React.JSX.Element {
   const [layouts, setLayouts] = useState<SavedLayout[]>([]);
   const [name, setName] = useState('');
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  /** The ⓘ bubble showing, if one is. */
+  const [info, setInfo] = useState<InfoKey | null>(null);
+  /** The page showing's name: its board, or Scratchpad. */
+  const [pageName, setPageNameShown] = useState(getPageName());
+  const [versions, setVersions] = useState<SavedVersion[]>([]);
+  const [pageLabel, setPageLabel] = useState(true);
+  /** EXPORT/SNTacticsBoard's size in bytes: null until known, or if unknowable. */
+  const [storage, setStorage] = useState<number | null>(null);
+  const [autoCleanup, setAutoCleanupShown] = useState(false);
+  /** The Saved layouts list, open or folded away under its heading. */
+  const [layoutsOpen, setLayoutsOpen] = useState(true);
+  /** Delete permission was refused when a clean-up asked for it. */
+  const [deleteRefused, setDeleteRefused] = useState(false);
+  const nameInput = useRef<TextInput>(null);
+  const scroll = useRef<ScrollView>(null);
+  /** Where the Save section is in the scroll, to open the menu at it. */
+  const saveYRef = useRef(0);
 
   // Why the button didn't come up last time, if it didn't.
   const [problem, setProblem] = useState<ButtonProblem | null>(null);
@@ -92,7 +128,14 @@ export default function App(): React.JSX.Element {
     const settings = await loadPaletteSettings();
     setButtonOn(settings.visible);
     setPenLock(settings.penLock);
+    setPageLabel(settings.pageLabel);
+    setAutoCleanupShown(settings.autoCleanup);
+    setLayoutsOpen(settings.layoutsOpen);
+    setDeleteRefused(false);
+    setPageNameShown(getPageName());
     setLayouts(await listLayouts());
+    setVersions(await listVersions());
+    setStorage(await storageUsed().catch(() => null));
   }, []);
 
   /**
@@ -107,8 +150,16 @@ export default function App(): React.JSX.Element {
   useEffect(() => {
     // Every opening, not just this first one: the tree stays mounted.
     const off = onMenuOpen(() => {
+      setInfo(null);
       refresh();
       askForFiles();
+      // Opened by the palette's Save on an unnamed page: straight to the name.
+      if (takeMenuFocus() === 'save') {
+        setTimeout(() => {
+          scroll.current?.scrollTo({y: saveYRef.current, animated: false});
+          nameInput.current?.focus();
+        }, 50);
+      }
     });
     // Opened from the toolbar rather than the button: take the button down.
     // Unless the pen lock opened the view mid-drag: that's not the menu.
@@ -122,6 +173,52 @@ export default function App(): React.JSX.Element {
   // empty and see-through, so the note and the drag carry on as they were.
   const [penLocked, setPenLocked] = useState(isPenLocked());
   useEffect(() => onPenLock(setPenLocked), []);
+
+  // Previous versions, under the saved layout of the same name. One list open
+  // at a time, by name.
+  const [openVersions, setOpenVersions] = useState<string | null>(null);
+  const versionsOf = (layoutName: string) =>
+    versions.filter(v => key(v.name) === key(layoutName));
+  const toggleVersions = (layoutName: string) =>
+    setOpenVersions(o => (o === key(layoutName) ? null : key(layoutName)));
+  const orphans = [
+    ...new Set(
+      versions
+        .filter(v => !layouts.some(l => key(l.name) === key(v.name)))
+        .map(v => v.name),
+    ),
+  ];
+
+  const togglePageLabel = useCallback(async (on: boolean) => {
+    setPageLabel(on);
+    await setPageLabelOn(on);
+  }, []);
+
+  /** Deleting files is only asked for here, when a clean-up is wanted. */
+  const cleanNow = useCallback(async () => {
+    if (!(await ensureDeleteAccess())) {
+      setDeleteRefused(true);
+      return;
+    }
+    closePanelThen(cleanUpNow);
+  }, []);
+
+  const toggleAutoCleanup = useCallback(async (on: boolean) => {
+    if (on && !(await ensureDeleteAccess())) {
+      setDeleteRefused(true);
+      return;
+    }
+    setDeleteRefused(false);
+    setAutoCleanupShown(on);
+    await setAutoCleanup(on);
+  }, []);
+
+  const toggleLayouts = useCallback(() => {
+    setLayoutsOpen(open => {
+      updatePaletteSettings({layoutsOpen: !open});
+      return !open;
+    });
+  }, []);
 
   const [penLock, setPenLock] = useState(true);
   const togglePenLock = useCallback(async (on: boolean) => {
@@ -150,9 +247,10 @@ export default function App(): React.JSX.Element {
         setConfirmDelete(id);
         return;
       }
-      await deleteLayout(id);
+      await deleteLayout(id); // its previous versions go with it
       setConfirmDelete(null);
       setLayouts(await listLayouts());
+      setVersions(await listVersions());
     },
     [confirmDelete],
   );
@@ -165,28 +263,24 @@ export default function App(): React.JSX.Element {
     <View style={styles.root}>
       <StatusBar barStyle="dark-content" backgroundColor={PAPER} />
       {/* Tapping the page around the menu closes it, as in Modulanner. */}
-      <Pressable
-        style={StyleSheet.absoluteFill}
-        onPress={close}
-        accessibilityLabel="Close the menu"
-      />
+      <Pressable style={StyleSheet.absoluteFill} onPress={close} />
       <View style={styles.card}>
         <View style={styles.header}>
-          <Text style={styles.title}>Soccer Board</Text>
-          <Button label="✕" onPress={close} square accessibilityLabel="Close" />
+          <Text style={styles.title}>Tactics Board</Text>
+          <Button label="✕" onPress={close} square />
         </View>
 
         <ScrollView
+          ref={scroll}
           contentContainerStyle={styles.body}
           keyboardShouldPersistTaps="handled">
-          <Section title="Floating button">
+          {/* The first section: no rule above it, the switch in its heading. */}
+          <View style={styles.firstSection}>
             <View style={styles.setting}>
-              <Text style={[styles.para, styles.settingText]}>
-                A small button over your page. Tap it for the pieces and drag
-                one onto the page; drag a piece on the page to move it, or onto
-                the button to remove it. Drag the button to move it, and hold it
-                to come back here.
-              </Text>
+              <View style={[styles.titleRow, styles.grow]}>
+                <Text style={styles.sectionTitle}>Floating button</Text>
+                <InfoIcon onPress={() => setInfo('floatingButton')} />
+              </View>
               <Toggle
                 value={buttonOn}
                 onValueChange={toggleButton}
@@ -200,26 +294,19 @@ export default function App(): React.JSX.Element {
                 onCheckAgain={refresh}
               />
             )}
-            <View style={styles.setting}>
-              <Text style={[styles.para, styles.settingText]}>
-                Stop the pen writing while it drags the button or a piece. The
-                screen may flash as the pen is locked and unlocked; any line
-                that still gets drawn is erased after the drop.
-              </Text>
-              <Toggle
-                value={penLock}
-                onValueChange={togglePenLock}
-                accessibilityLabel="Lock the pen while dragging"
-              />
-            </View>
-          </Section>
+            <Setting
+              label="(Attempt to) Disable pen strokes while dragging"
+              info="penLock"
+              onInfo={setInfo}
+              value={penLock}
+              onValueChange={togglePenLock}
+            />
+          </View>
 
           {files === false && (
-            <Section title="File access">
+            <Section title="File access" info="fileAccess" onInfo={setInfo}>
               <Text style={styles.para}>
-                Soccer Board saves page copies and saved layouts in the EXPORT
-                folder, so it needs permission to read and write files. Choose
-                "Always allow" so it doesn't ask each time.
+                Needed to copy and save pages. Choose "Always allow".
               </Text>
               <View style={styles.row}>
                 <Button
@@ -231,114 +318,199 @@ export default function App(): React.JSX.Element {
             </Section>
           )}
 
-          <Section title="Copy this page">
-            <Text style={styles.para}>
-              A new page after this one with the background, your drawing and
-              the pieces, all still editable. Handy for the next phase of a
-              drill.
-            </Text>
-            <View style={styles.row}>
-              <Button
-                label="Copy to a new page"
-                primary
-                disabled={files !== true}
-                onPress={() => closePanelThen(copyThisPage)}
+          <View onLayout={e => (saveYRef.current = e.nativeEvent.layout.y)}>
+            <Section
+              title="Save this page"
+              info="savePage"
+              onInfo={setInfo}
+              right={
+                <Text style={styles.pageName} numberOfLines={1}>
+                  This page: <Text style={styles.strong}>{pageName}</Text>
+                </Text>
+              }>
+              <View style={styles.row}>
+                <TextInput
+                  ref={nameInput}
+                  value={name}
+                  maxLength={NAME_MAX}
+                  onChangeText={setName}
+                  placeholder="Name, e.g. Rondo 4v2"
+                  placeholderTextColor={DIM}
+                  style={styles.input}
+                  returnKeyType="done"
+                  onSubmitEditing={save}
+                />
+                <Button
+                  label="Save"
+                  primary
+                  disabled={files !== true || !name.trim()}
+                  onPress={save}
+                />
+              </View>
+              <Setting
+                label="Label new pages"
+                info="pageLabel"
+                onInfo={setInfo}
+                value={pageLabel}
+                onValueChange={togglePageLabel}
               />
-            </View>
-          </Section>
+            </Section>
+          </View>
 
-          <Section title="Save this page">
-            <Text style={styles.para}>
-              Saves the whole page, background, drawing and pieces, under a
-              name: a drill you'll run again, or a base to start from. The menu
-              closes while it saves.
-            </Text>
-            <View style={styles.row}>
-              <TextInput
-                value={name}
-                onChangeText={setName}
-                placeholder="Name, e.g. Rondo 4v2"
-                placeholderTextColor={DIM}
-                style={styles.input}
-                returnKeyType="done"
-                onSubmitEditing={save}
-                accessibilityLabel="Layout name"
+          <Section
+            title="Saved layouts"
+            info="savedLayouts"
+            onInfo={setInfo}
+            right={
+              <VersionsToggle
+                count={layouts.length + orphans.length}
+                open={layoutsOpen}
+                onPress={toggleLayouts}
               />
-              <Button
-                label="Save"
-                primary
-                disabled={files !== true || !name.trim()}
-                onPress={save}
-              />
-            </View>
-          </Section>
-
-          <Section title="Saved layouts">
-            {layouts.length === 0 ? (
+            }>
+            {layouts.length === 0 && orphans.length === 0 && (
               <Text style={[styles.para, styles.dim]}>
                 No saved layouts yet.
               </Text>
-            ) : (
-              <>
-                <Text style={[styles.para, styles.dim]}>
-                  New page adds a copy after the page you're on. Pieces here
-                  swaps the pieces on this page for the saved ones and keeps
-                  your drawing.
-                </Text>
-                {layouts.map(l => (
-                  <View key={l.id} style={styles.layout}>
-                    <View style={styles.layoutText}>
-                      <Text style={styles.layoutName} numberOfLines={1}>
-                        {l.name}
-                      </Text>
-                      <Text style={styles.layoutMeta}>
-                        {describe(l)} · {dateOf(l.savedAt)}
-                      </Text>
-                    </View>
-                    <View style={styles.row}>
-                      {hasPage(l) && (
-                        <Button
-                          label="New page"
-                          primary
-                          disabled={files !== true}
-                          onPress={() =>
-                            closePanelThen(() => loadLayoutAsPage(l))
-                          }
-                        />
-                      )}
-                      {l.pieces.length > 0 && (
-                        <Button
-                          label="Pieces here"
-                          primary={!hasPage(l)}
-                          onPress={() =>
-                            closePanelThen(() =>
-                              loadLayoutHere(l.name, l.pieces),
-                            )
-                          }
-                        />
-                      )}
-                      <Button
-                        label={confirmDelete === l.id ? 'Delete?' : 'Delete'}
-                        onPress={() => remove(l.id)}
-                      />
-                    </View>
-                  </View>
-                ))}
-              </>
             )}
+            {layoutsOpen &&
+              layouts.map(l => (
+                <View key={l.id} style={styles.layout}>
+                  <View style={styles.layoutHead}>
+                    <Text
+                      style={[styles.layoutName, styles.grow]}
+                      numberOfLines={1}>
+                      {l.name}
+                    </Text>
+                    {hasPage(l) && (
+                      <Button
+                        label="New page"
+                        small
+                        primary
+                        disabled={files !== true}
+                        onPress={() =>
+                          closePanelThen(() => loadLayoutAsPage(l))
+                        }
+                      />
+                    )}
+                    <Button
+                      label={confirmDelete === l.id ? 'Delete?' : 'Delete'}
+                      small
+                      onPress={() => remove(l.id)}
+                    />
+                    <VersionsToggle
+                      count={versionsOf(l.name).length}
+                      open={openVersions === key(l.name)}
+                      onPress={() => toggleVersions(l.name)}
+                    />
+                  </View>
+                  <Text style={styles.layoutMeta}>
+                    {describe(l)} · {dateOf(l.savedAt)}
+                  </Text>
+                  {openVersions === key(l.name) && (
+                    <VersionList
+                      versions={versionsOf(l.name)}
+                      disabled={files !== true}
+                    />
+                  )}
+                </View>
+              ))}
+            {/* Versions whose board isn't saved (the Scratchpad, or a
+                deleted layout): their own row, versions only. */}
+            {layoutsOpen &&
+              orphans.map(orphan => (
+                <View key={orphan} style={styles.layout}>
+                  <View style={styles.layoutHead}>
+                    <Text
+                      style={[styles.layoutName, styles.grow]}
+                      numberOfLines={1}>
+                      {orphan}
+                    </Text>
+                    <VersionsToggle
+                      count={versionsOf(orphan).length}
+                      open={openVersions === key(orphan)}
+                      onPress={() => toggleVersions(orphan)}
+                    />
+                  </View>
+                  <Text style={styles.layoutMeta}>Earlier versions only</Text>
+                  {openVersions === key(orphan) && (
+                    <VersionList
+                      versions={versionsOf(orphan)}
+                      disabled={files !== true}
+                    />
+                  )}
+                </View>
+              ))}
+          </Section>
+
+          <Section
+            title="Storage"
+            info="storage"
+            onInfo={setInfo}
+            right={
+              storage !== null && (
+                <Text style={styles.pageName}>
+                  EXPORT/SNTacticsBoard:{' '}
+                  <Text style={styles.strong}>{formatBytes(storage)}</Text>
+                </Text>
+              )
+            }>
+            <Setting
+              label="Clean up automatically"
+              value={autoCleanup}
+              onValueChange={toggleAutoCleanup}
+            />
+            <View style={styles.row}>
+              <Button
+                label="Clean up now"
+                small
+                disabled={files !== true}
+                onPress={cleanNow}
+              />
+              <Text style={[styles.hint, styles.grow]}>
+                {deleteRefused
+                  ? 'Permissions were denied. You can manually delete them at EXPORT/SNTacticsBoard'
+                  : autoCleanup
+                  ? 'Cleans up after each Save, Load, or Reset.'
+                  : 'Or manually clean them up at EXPORT/SNTacticsBoard'}
+              </Text>
+            </View>
           </Section>
 
           <Section title="Pieces">
             <View style={styles.legend}>
               {LEGEND.map(item => (
                 <View key={item.kind} style={styles.legendItem}>
-                  <PieceGlyph kind={item.kind} size={36} />
+                  <PieceGlyph kind={item.kind} size={z(36)} />
                   <Text style={styles.legendText}>{item.label}</Text>
                 </View>
               ))}
             </View>
           </Section>
         </ScrollView>
+
+        {/* Over the card, not instead of it, so the menu keeps its scroll
+            position underneath (Modulanner's reason too). */}
+        {info && (
+          <Pressable style={styles.infoOverlay} onPress={() => setInfo(null)}>
+            <Pressable
+              style={styles.infoCard}
+              onPress={e => e.stopPropagation()}>
+              <View style={styles.infoHeader}>
+                <Text style={styles.sectionTitle}>
+                  {INFO_TOPICS[info].title}
+                </Text>
+                <Button label="✕" onPress={() => setInfo(null)} square />
+              </View>
+              <ScrollView contentContainerStyle={styles.infoBody}>
+                <Text style={styles.para}>{INFO_TOPICS[info].body}</Text>
+              </ScrollView>
+              <View style={styles.infoFooter}>
+                <Button label="Done" primary onPress={() => setInfo(null)} />
+              </View>
+            </Pressable>
+          </Pressable>
+        )}
       </View>
     </View>
   );
@@ -350,12 +522,14 @@ function describe(l: SavedLayout): string {
   if (!hasPage(l)) {
     return `${pieces} only`;
   }
-  const page = l.template ? `${l.template} page` : 'Page';
+  const template = shownTemplate(l.template ?? '');
+  const page = template ? `${template} template` : 'Template';
+  const drawing = l.marks === 1 ? 'drawing' : 'drawings';
   if (l.pieces.length === 0) {
-    return l.marks ? `${page} with drawing` : page;
+    return l.marks ? `${page} with ${drawing}` : page;
   }
   return l.marks
-    ? `${page} with ${pieces} and drawing`
+    ? `${page} with ${pieces} and ${drawing}`
     : `${page} with ${pieces}`;
 }
 
@@ -372,9 +546,7 @@ function ButtonStatus({
   if (!palette.available) {
     return (
       <Text style={[styles.para, styles.strong]}>
-        This build of the plugin is missing the button's native code. Rebuild it
-        with npm run build:plugin and look for a Gradle error in the build
-        output: without one, the .snplg holds an app.npk.
+        Error: native code missing
       </Text>
     );
   }
@@ -382,8 +554,7 @@ function ButtonStatus({
     return (
       <>
         <Text style={[styles.para, styles.strong]}>
-          Android isn't letting the Supernote plugin host display over other
-          apps. Allow it on the next screen, then come back and check again.
+          Error: Overlay permissions not working
         </Text>
         <View style={styles.row}>
           <Button
@@ -403,10 +574,54 @@ function ButtonStatus({
       </Text>
     );
   }
+  return null;
+}
+
+/**
+ * A count and ▾ that opens a list, ▴ to close it: a layout's earlier
+ * versions, or the Saved layouts list itself.
+ */
+function VersionsToggle({
+  count,
+  open,
+  onPress,
+}: {
+  count: number;
+  open: boolean;
+  onPress: () => void;
+}) {
+  if (count === 0) {
+    return null;
+  }
   return (
-    <Text style={[styles.para, styles.dim]}>
-      It appears when you close this menu.
-    </Text>
+    <Button label={`${count} ${open ? '▴' : '▾'}`} small onPress={onPress} />
+  );
+}
+
+/** A layout's earlier versions, newest first, each with Restore. */
+function VersionList({
+  versions,
+  disabled,
+}: {
+  versions: SavedVersion[];
+  disabled: boolean;
+}) {
+  return (
+    <View style={styles.versions}>
+      {versions.map(v => (
+        <View key={v.keyword} style={styles.version}>
+          <Text style={[styles.layoutMeta, styles.grow]}>
+            {timeOf(v.savedAt)}
+          </Text>
+          <Button
+            label="Restore"
+            small
+            disabled={disabled}
+            onPress={() => closePanelThen(() => restoreVersion(v.keyword))}
+          />
+        </View>
+      ))}
+    </View>
   );
 }
 
@@ -435,15 +650,56 @@ function Toggle({
 
 function Section({
   title,
+  info,
+  onInfo,
+  right,
   children,
 }: {
   title: string;
+  info?: InfoKey;
+  onInfo?: (topic: InfoKey) => void;
+  /** Shown at the right end of the heading. */
+  right?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
     <View style={styles.section}>
-      <Text style={styles.sectionTitle}>{title}</Text>
+      <View style={styles.titleRow}>
+        <Text style={styles.sectionTitle}>{title}</Text>
+        {info && onInfo && <InfoIcon onPress={() => onInfo(info)} />}
+        {right && <View style={styles.titleRight}>{right}</View>}
+      </View>
       {children}
+    </View>
+  );
+}
+
+/** A switch with its label and ⓘ: one line, the explanation behind the icon. */
+function Setting({
+  label,
+  info,
+  onInfo,
+  value,
+  onValueChange,
+}: {
+  label: string;
+  /** Left out when the section's ⓘ covers it. */
+  info?: InfoKey;
+  onInfo?: (key: InfoKey) => void;
+  value: boolean;
+  onValueChange: (v: boolean) => void;
+}) {
+  return (
+    <View style={styles.setting}>
+      <View style={[styles.titleRow, styles.settingText]}>
+        <Text style={styles.para}>{label}</Text>
+        {info && onInfo && <InfoIcon onPress={() => onInfo(info)} />}
+      </View>
+      <Toggle
+        value={value}
+        onValueChange={onValueChange}
+        accessibilityLabel={label}
+      />
     </View>
   );
 }
@@ -454,6 +710,7 @@ function Button({
   disabled,
   primary,
   square,
+  small,
   accessibilityLabel,
 }: {
   label: string;
@@ -461,6 +718,8 @@ function Button({
   disabled?: boolean;
   primary?: boolean;
   square?: boolean;
+  /** For rows of a list: shorter, lighter, smaller type. */
+  small?: boolean;
   accessibilityLabel?: string;
 }) {
   return (
@@ -475,6 +734,7 @@ function Button({
         const dark = primary ? !pressed : pressed;
         return [
           styles.button,
+          small && styles.buttonSmall,
           square && styles.buttonSquare,
           dark && styles.buttonDark,
           disabled && styles.buttonDisabled,
@@ -484,6 +744,7 @@ function Button({
         <Text
           style={[
             styles.buttonText,
+            small && styles.buttonTextSmall,
             square && styles.buttonTextSquare,
             (primary ? !pressed : pressed) &&
               !disabled &&
@@ -512,94 +773,152 @@ const styles = StyleSheet.create({
     height: '67%',
     minWidth: 560,
     backgroundColor: PAPER,
-    borderWidth: 3, // a thick border stands in for a shadow on e-ink
+    borderWidth: zb(3), // a thick border stands in for a shadow on e-ink
     borderColor: INK,
-    borderRadius: 12,
+    borderRadius: z(12),
     overflow: 'hidden',
   },
 
   header: {
-    height: 68,
+    height: z(68),
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    borderBottomWidth: 3,
+    paddingHorizontal: z(20),
+    borderBottomWidth: zb(3),
     borderBottomColor: INK,
   },
-  title: {fontSize: 24, fontWeight: 'bold', color: INK},
+  title: {fontSize: z(24), fontWeight: 'bold', color: INK},
 
   body: {
-    padding: 24,
-    gap: 22,
+    paddingHorizontal: z(22),
+    paddingVertical: z(16),
+    gap: z(14),
   },
-  para: {fontSize: 18, lineHeight: 27, color: INK},
+  grow: {flex: 1, minWidth: z(0)},
+  para: {fontSize: z(18), lineHeight: z(27), color: INK},
   dim: {color: DIM},
   strong: {fontWeight: 'bold'},
 
-  setting: {flexDirection: 'row', alignItems: 'center', gap: 20},
+  setting: {flexDirection: 'row', alignItems: 'center', gap: z(20)},
   settingText: {flex: 1},
   track: {
-    width: 68,
-    height: 38,
-    borderRadius: 19,
-    borderWidth: 3,
+    width: z(68),
+    height: z(38),
+    borderRadius: z(19),
+    borderWidth: zb(3),
     borderColor: INK,
-    padding: 3,
+    padding: z(3),
     justifyContent: 'center',
   },
   trackOn: {backgroundColor: INK},
   trackOff: {backgroundColor: PAPER},
-  thumb: {width: 26, height: 26, borderRadius: 13},
+  thumb: {width: z(26), height: z(26), borderRadius: z(13)},
   thumbOn: {alignSelf: 'flex-end', backgroundColor: PAPER},
   thumbOff: {alignSelf: 'flex-start', backgroundColor: INK},
 
-  section: {gap: 12, borderTopWidth: 2, borderTopColor: INK, paddingTop: 16},
-  sectionTitle: {fontSize: 20, fontWeight: 'bold', color: INK},
-  row: {flexDirection: 'row', flexWrap: 'wrap', gap: 12, alignItems: 'center'},
+  section: {
+    gap: z(10),
+    borderTopWidth: zb(2),
+    borderTopColor: INK,
+    paddingTop: z(12),
+  },
+  firstSection: {gap: z(10)},
+  sectionTitle: {fontSize: z(20), fontWeight: 'bold', color: INK},
+  titleRow: {flexDirection: 'row', alignItems: 'center', gap: z(10)},
+  titleRight: {flex: 1, minWidth: z(0), alignItems: 'flex-end'},
+  pageName: {fontSize: z(16), color: INK},
+
+  // The ⓘ bubble: a bordered card on a dimmed menu, narrower than the menu
+  // so it reads as on top of it.
+  infoOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  infoCard: {
+    width: '86%',
+    maxHeight: '86%',
+    backgroundColor: PAPER,
+    borderWidth: zb(3),
+    borderColor: INK,
+    borderRadius: z(12),
+    overflow: 'hidden',
+  },
+  infoHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: z(12),
+    paddingLeft: z(20),
+    paddingRight: z(12),
+    paddingVertical: z(10),
+    borderBottomWidth: zb(2),
+    borderBottomColor: INK,
+  },
+  infoBody: {paddingHorizontal: z(20), paddingVertical: z(16)},
+  infoFooter: {padding: z(12), alignItems: 'stretch'},
+  row: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: z(12),
+    alignItems: 'center',
+  },
 
   input: {
     flex: 1,
-    minWidth: 220,
-    height: 56,
-    borderWidth: 2,
+    minWidth: z(220),
+    height: z(56),
+    borderWidth: zb(2),
     borderColor: INK,
-    borderRadius: 8,
-    paddingHorizontal: 14,
-    fontSize: 19,
+    borderRadius: z(8),
+    paddingHorizontal: z(14),
+    fontSize: z(19),
     color: INK,
     backgroundColor: PAPER,
   },
 
   layout: {
-    gap: 10,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
+    gap: z(2),
+    paddingVertical: z(8),
+    borderBottomWidth: zb(1),
     borderBottomColor: NET,
   },
-  layoutText: {minWidth: 0},
-  layoutName: {fontSize: 19, fontWeight: 'bold', color: INK},
-  layoutMeta: {fontSize: 15, color: DIM, marginTop: 2},
+  // Name, then the buttons, then the versions ▾ at the right end.
+  layoutHead: {flexDirection: 'row', alignItems: 'center', gap: z(8)},
+  versions: {marginTop: z(6), marginLeft: z(16), gap: z(4)},
+  version: {flexDirection: 'row', alignItems: 'center', gap: z(12)},
+  layoutName: {fontSize: z(19), fontWeight: 'bold', color: INK},
+  layoutMeta: {fontSize: z(15), color: DIM, marginTop: z(2)},
+  hint: {fontSize: z(15), lineHeight: z(21), color: DIM},
 
-  legend: {flexDirection: 'row', flexWrap: 'wrap', gap: 24},
-  legendItem: {flexDirection: 'row', alignItems: 'center', gap: 10},
-  legendText: {fontSize: 18, color: INK},
+  legend: {flexDirection: 'row', flexWrap: 'wrap', gap: z(24)},
+  legendItem: {flexDirection: 'row', alignItems: 'center', gap: z(10)},
+  legendText: {fontSize: z(18), color: INK},
 
   button: {
-    height: 56,
-    paddingHorizontal: 22,
-    borderWidth: 3,
+    height: z(56),
+    paddingHorizontal: z(22),
+    borderWidth: zb(3),
     borderColor: INK,
-    borderRadius: 8,
+    borderRadius: z(8),
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: PAPER,
   },
-  buttonSquare: {width: 52, height: 52, paddingHorizontal: 0},
+  buttonSmall: {
+    height: z(38),
+    paddingHorizontal: z(12),
+    borderWidth: zb(2),
+    borderRadius: z(6),
+  },
+  buttonSquare: {width: z(52), height: z(52), paddingHorizontal: z(0)},
   buttonDark: {backgroundColor: INK},
   buttonDisabled: {borderColor: NET, backgroundColor: PAPER},
-  buttonText: {fontSize: 19, fontWeight: 'bold', color: INK},
-  buttonTextSquare: {fontSize: 24},
+  buttonText: {fontSize: z(19), fontWeight: 'bold', color: INK},
+  buttonTextSmall: {fontSize: z(15)},
+  buttonTextSquare: {fontSize: z(24)},
   buttonTextDark: {color: PAPER},
   buttonTextDisabled: {color: NET},
 });

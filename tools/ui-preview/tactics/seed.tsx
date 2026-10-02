@@ -1,28 +1,11 @@
 /**
- * Scenario setup for Soccer Board: put a pitch page with a drill on it into the
- * simulated note, using the plugin's own code wherever it has some.
+ * Scenario setup for Tactics Board: put a drill on a page of the simulated
+ * note, using the plugin's own code wherever it has some.
  */
-import React from 'react';
-import { flushSync } from 'react-dom';
-import { createRoot } from 'react-dom/client';
-
-import PitchSheet from '../../../src/components/PitchSheet';
-import { getContext, pitchPngPath, placePiece } from '../../../src/page/pageOps';
+import { getContext, placePiece } from '../../../src/page/pageOps';
 import type { PieceKind } from '../../../src/page/pieceShapes';
 import { CURRENT_PAGE } from '../src/mocks/sn-plugin-lib';
-import { NOTE, addElements, addLayer, registerImage } from '../src/mocks/note';
-
-/** Draw the plugin's pitch sheet and keep it as the pitch PNG for this page size. */
-export async function preparePitchImage(): Promise<string> {
-  const { width, height } = CURRENT_PAGE.pageSize;
-  const host = document.createElement('div');
-  const root = createRoot(host);
-  flushSync(() => root.render(<PitchSheet width={width} height={height} onLayout={() => {}} />));
-  const node = host.firstElementChild as HTMLElement;
-  const path = await pitchPngPath({ width, height });
-  registerImage(path, { node, width, height });
-  return path;
-}
+import { NOTE, addElements, addLayer } from '../src/mocks/note';
 
 type Placement = [PieceKind, number, number];
 
@@ -45,10 +28,9 @@ const ARROWS: Array<Array<[number, number]>> = [
   [[0.53, 0.72], [0.548, 0.723]],
 ];
 
-/** Make the current page a pitch page holding the rondo drill and some arrows. */
+/** Put the rondo drill and some arrows on the current page. */
 export async function seedDrill(): Promise<void> {
   const { width, height } = CURRENT_PAGE.pageSize;
-  NOTE.pages[NOTE.current].template = await preparePitchImage();
   addLayer(NOTE.current, { layerId: 1, name: 'Pieces' });
 
   const ctx = await getContext();

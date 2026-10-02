@@ -33,7 +33,7 @@ export interface SavedLayout {
   pieces: LayoutPiece[];
   /** The keyword on its page in the layouts note, "~BOARD:<template>:<name>". */
   keyword?: string;
-  /** The name of the template its page is on, e.g. "Soccer Field". */
+  /** The name of the template its page is on, e.g. "Futsal Court". */
   template?: string;
   /** Before keywords: its page's position in the layouts note. */
   libPage?: number;
@@ -55,9 +55,9 @@ export interface LayoutPage {
 export const hasPage = (l: SavedLayout) =>
   l.keyword !== undefined || l.libPage !== undefined;
 
-const KEY = 'snsoccer:layouts:v1';
+const KEY = 'tacticsboard:layouts:v1';
 /** Keywords of layouts deleted in the menu, to remove once we can. */
-const REMOVALS_KEY = 'snsoccer:layouts:removals:v2';
+const REMOVALS_KEY = 'tacticsboard:layouts:removals:v2';
 
 function valid(v: unknown): v is SavedLayout {
   const l = v as Partial<SavedLayout> | null;
@@ -140,13 +140,27 @@ export async function saveLayout(
   return {layout, replaced: all.find(same) ?? null};
 }
 
-/** Take a layout off the list. Its page is queued for removal. */
+/**
+ * Take a layout off the list, and its previous versions with it. Their
+ * pages are queued for removal from the layouts note.
+ */
 export async function deleteLayout(id: string): Promise<void> {
   const all = await listLayouts();
   const gone = all.find(l => l.id === id);
   await write(all.filter(l => l.id !== id));
-  if (gone?.keyword) {
+  if (!gone) {
+    return;
+  }
+  if (gone.keyword) {
     await queueRemoval(gone.keyword);
+  }
+  // Versions go by name, whatever its case, as saving matches them.
+  const name = gone.name.trim().toLowerCase();
+  const versions = await listVersions();
+  const mine = versions.filter(v => v.name.trim().toLowerCase() === name);
+  await replaceVersions(versions.filter(v => !mine.includes(v)));
+  for (const v of mine) {
+    await queueRemoval(v.keyword);
   }
 }
 
@@ -185,6 +199,50 @@ export async function removalDone(keyword: string): Promise<void> {
 /** Replace the list wholesale, as after reading the layouts note. */
 export async function replaceLayouts(list: SavedLayout[]): Promise<void> {
   await write([...list].sort((a, b) => b.savedAt - a.savedAt));
+}
+
+// ── Earlier versions ────────────────────────────────────────────────────────
+//
+// The menu's copy of the versions in the layouts note (pageOps.ts), brought
+// in line with the note, like the list above, whenever the menu closes.
+
+export interface SavedVersion {
+  /** "~BOARD-OLD:<template>:<name>:<when>" on its layouts-note page. */
+  keyword: string;
+  name: string;
+  template: string;
+  /** When this version was saved, epoch ms. */
+  savedAt: number;
+}
+
+const VERSIONS_KEY = 'tacticsboard:versions:v1';
+
+/** Earlier versions, newest first. */
+export async function listVersions(): Promise<SavedVersion[]> {
+  try {
+    const json = await AsyncStorage.getItem(VERSIONS_KEY);
+    const list = json ? (JSON.parse(json) as unknown[]) : [];
+    return list
+      .filter((v): v is SavedVersion => {
+        const q = v as Partial<SavedVersion> | null;
+        return (
+          !!q &&
+          typeof q.keyword === 'string' &&
+          typeof q.name === 'string' &&
+          typeof q.savedAt === 'number'
+        );
+      })
+      .sort((a, b) => b.savedAt - a.savedAt);
+  } catch {
+    return [];
+  }
+}
+
+export async function replaceVersions(list: SavedVersion[]): Promise<void> {
+  await AsyncStorage.setItem(
+    VERSIONS_KEY,
+    JSON.stringify([...list].sort((a, b) => b.savedAt - a.savedAt)),
+  );
 }
 
 /** A layout's pieces in page pixels, for a page of this size. */

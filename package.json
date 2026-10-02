@@ -1,10 +1,14 @@
 {
-  "name": "snsoccer",
-  "version": "0.1.0",
+  "name": "tacticsboard",
+  "version": "0.9.0",
   "private": true,
   "description": "Coach's whiteboard for Supernote notes: draw with the pen, and drag players, cones and balls onto the page from a floating button, and save layouts to load later.",
   "scripts": {
     "build:plugin": "node scripts/build-plugin.js",
+    "deploy": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/deployPlugin.ps1",
+    "run": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/runPlugin.ps1",
+    "logs": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/logs.ps1",
+    "deploy:run": "npm run deploy && npm run run",
     "preview": "npm --prefix tools/ui-preview run dev",
     "preview:install": "npm --prefix tools/ui-preview install",
     "lint": "eslint .",

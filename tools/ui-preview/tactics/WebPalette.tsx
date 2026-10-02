@@ -1,9 +1,9 @@
 /**
  * A browser stand-in for the native floating button
- * (android/app/src/main/java/com/snsoccer/palette/SoccerPaletteModule.kt).
+ * (android/app/src/main/java/com/tacticsboard/palette/TacticsPaletteModule.kt).
  *
- * It installs itself as NativeModules.SoccerPalette, answers the same calls,
- * and sends the same "SoccerPalette" events, so the plugin's real controller
+ * It installs itself as NativeModules.TacticsPalette, answers the same calls,
+ * and sends the same "TacticsPalette" events, so the plugin's real controller
  * (src/palette/controller.ts) does the real page work against the simulated
  * note. Each native window is a div here, with the same sizes and rules:
  *
@@ -30,7 +30,34 @@ const BUTTON = 40;
 const TILE = 56;
 const PAD = Math.floor(TILE / 10);
 const TILES_W = TILE + 2 * PAD;
-const TILES_H = KINDS.length * TILE + 2 * PAD;
+/** The name tag above the pieces, and the Save / Load / Reset rows below. */
+const NAME_H = 26;
+const ACTION_H = 34;
+/** Save / Load / Reset the page; Trash takes pieces dragged onto it. */
+const ACTIONS = ['Save', 'Load', 'Copy', 'Reset', 'Trash'] as const;
+/** The trash gets a row of its own, as tall as a piece, below its own rule. */
+const TRASH_H = TILE;
+const PIECES_TOP = NAME_H + PAD;
+const ACTIONS_TOP = PIECES_TOP + KINDS.length * TILE + PAD;
+const TRASH_TOP = ACTIONS_TOP + (ACTIONS.length - 1) * ACTION_H + PAD;
+const TILES_H = TRASH_TOP + TRASH_H + PAD;
+
+/** Where each action's row starts in the palette, and how tall it is. */
+const rowOf = (action: (typeof ACTIONS)[number]) =>
+  action === 'Trash'
+    ? { top: TRASH_TOP, h: TRASH_H }
+    : { top: ACTIONS_TOP + ACTIONS.indexOf(action) * ACTION_H, h: ACTION_H };
+
+/** The action at a height in the palette, if any. */
+const actionAt = (y: number) =>
+  ACTIONS.find(a => {
+    const r = rowOf(a);
+    return y >= r.top && y < r.top + r.h;
+  });
+/** The Load list, beside the palette. */
+const LIST_W = 220;
+const LIST_ROW = 44;
+const ARMED_MS = 3000;
 const LONG_PRESS_MS = 800;
 const SLOP = 6;
 
@@ -46,6 +73,15 @@ const state = {
   masks: [] as Rect[],
   ghost: null as null | { kind: PieceKind; x: number; y: number },
   tick: null as null | number,
+  /** The name tag: the page's board, or Scratchpad. */
+  pageName: 'Scratchpad',
+  /** Saved boards, for the Load list. */
+  boards: [] as Array<{ keyword: string; name: string }>,
+  loadOpen: false,
+  /** Reset or Trash, tapped once; a second tap within ARMED_MS acts. */
+  armed: null as null | 'Reset' | 'Trash',
+  /** A carried piece is over the trash: dropping it there removes it. */
+  overTrash: false,
 };
 const listeners = new Set<() => void>();
 let version = 0;
@@ -61,7 +97,7 @@ export function setPaletteState(patch: Partial<typeof state>) {
 }
 
 function emit(event: Record<string, unknown>) {
-  DeviceEventEmitter.emit('SoccerPalette', event);
+  DeviceEventEmitter.emit('TacticsPalette', event);
 }
 const point = (x: number, y: number, e: React.PointerEvent) => ({
   x, y,
@@ -93,10 +129,31 @@ function tilesRect(): Rect | null {
 const overControls = (x: number, y: number) =>
   inside(buttonRect(), x, y) || inside(tilesRect(), x, y);
 
+/** The trash row of the palette, where a dragged piece is dropped to remove it. */
+function trashRect(): Rect | null {
+  const t = tilesRect();
+  if (!t) return null;
+  const r = rowOf('Trash');
+  return { x: t.x, y: t.y + r.top - 2, w: t.w, h: r.h };
+}
+
 const handleSize = () => Math.floor(state.pieceSize * 1.15);
 
 function hideAll() {
-  set({ button: null, handles: new Map(), carrying: null, masks: [], ghost: null });
+  set({
+    button: null, handles: new Map(), carrying: null, masks: [], ghost: null,
+    loadOpen: false, armed: null,
+  });
+}
+
+/** The Load list: left of the palette, or right if there's no room. */
+function listRect(): Rect | null {
+  const t = tilesRect();
+  if (!t || !state.loadOpen) return null;
+  const h = Math.max(1, state.boards.length) * LIST_ROW + NAME_H + 2 * PAD;
+  const x = t.x - LIST_W - 6 >= 0 ? t.x - LIST_W - 6 : t.x + t.w + 6;
+  const y = clamp(t.y + ACTIONS_TOP, 0, window.innerHeight - h);
+  return { x, y, w: LIST_W, h };
 }
 
 function stopTick() {
@@ -104,7 +161,7 @@ function stopTick() {
   state.tick = null;
 }
 
-NativeModules.SoccerPalette = {
+NativeModules.TacticsPalette = {
   canDrawOverlays: async () => state.permission,
   requestOverlayPermission: () => {
     // The system settings screen, in one step.
@@ -146,6 +203,12 @@ NativeModules.SoccerPalette = {
   // The native module draws this in its own window; the harness's toast will do.
   notify: (message: string) =>
     window.dispatchEvent(new CustomEvent('preview-toast', { detail: message })),
+  setBusy: () => {},
+  wait: (ms: number) => new Promise(done => window.setTimeout(() => done(null), ms)),
+  setPageName: (name: string) => set({ pageName: name }),
+  setBoards: (boards: Array<{ keyword: string; name: string }>) => set({ boards }),
+  // The browser has no folder to measure: the Manta's, after a clean-up.
+  folderSize: () => Promise.resolve(27 * 1024 * 1024),
   addListener: () => {},
   removeListeners: () => {},
 };
@@ -260,19 +323,58 @@ function Button() {
   );
 }
 
+let armTimer: number | null = null;
+
+/** Reset and Trash take two taps, as on the device: arm, then act. */
+function twoTaps(action: 'Reset' | 'Trash', first: string, then: () => void) {
+  if (armTimer !== null) window.clearTimeout(armTimer);
+  if (state.armed !== action) {
+    set({ armed: action, loadOpen: false });
+    armTimer = window.setTimeout(() => set({ armed: null }), ARMED_MS);
+    window.dispatchEvent(new CustomEvent('preview-toast', { detail: first }));
+  } else {
+    set({ armed: null });
+    then();
+  }
+}
+
+function onAction(action: (typeof ACTIONS)[number]) {
+  if (action === 'Save') {
+    set({ loadOpen: false, armed: null });
+    emit({ type: 'save' });
+  } else if (action === 'Load') {
+    set({ loadOpen: !state.loadOpen, armed: null });
+  } else if (action === 'Copy') {
+    set({ loadOpen: false, armed: null });
+    emit({ type: 'copy' });
+  } else if (action === 'Trash') {
+    twoTaps('Trash', 'Tap again to clear this page.', () => emit({ type: 'clear' }));
+  } else {
+    twoTaps('Reset', 'Tap again to reset this page.', () => emit({ type: 'reset' }));
+  }
+}
+
 function Tiles() {
   const r = tilesRect()!;
   const [drag, setDrag] = useState<null | { kind: PieceKind; downX: number; downY: number }>(null);
+  const [pressed, setPressed] = useState<string | null>(null);
+  const line = Math.max(2, TILE * 0.04);
 
   return (
     <div
       style={{
         ...abs(r), zIndex: 52, background: '#fff', boxSizing: 'border-box',
-        border: `${Math.max(2, TILE * 0.04)}px solid #000`, touchAction: 'none', userSelect: 'none',
+        border: `${line}px solid #000`, touchAction: 'none', userSelect: 'none',
       }}
       onPointerDown={e => {
-        const i = Math.floor((e.clientY - r.y - PAD) / TILE);
-        const kind = KINDS[i];
+        const y = e.clientY - r.y;
+        if (y >= ACTIONS_TOP) {
+          const action = actionAt(y);
+          if (action) setPressed(action);
+          return;
+        }
+        const i = Math.floor((y - PIECES_TOP) / TILE);
+        const kind = y >= PIECES_TOP ? KINDS[i] : undefined;
         if (!kind) return;
         (e.currentTarget as Element).setPointerCapture(e.pointerId);
         setDrag({ kind, downX: e.clientX, downY: e.clientY });
@@ -280,6 +382,13 @@ function Tiles() {
       }}
       onPointerMove={e => drag && set({ ghost: { kind: drag.kind, x: e.clientX, y: e.clientY } })}
       onPointerUp={e => {
+        if (pressed) {
+          const y = e.clientY - r.y;
+          const action = y >= ACTIONS_TOP ? actionAt(y) : undefined;
+          setPressed(null);
+          if (action === pressed) onAction(action);
+          return;
+        }
         if (!drag) return;
         setDrag(null);
         set({ ghost: null });
@@ -291,12 +400,24 @@ function Tiles() {
         }
       }}
     >
+      <div
+        title={state.pageName}
+        style={{
+          position: 'absolute', left: 0, top: 0, width: TILES_W - 2 * line, height: NAME_H,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 3px',
+          boxSizing: 'border-box', borderBottom: `${line}px solid #000`,
+          font: 'bold 11px sans-serif', whiteSpace: 'nowrap', overflow: 'hidden',
+          textOverflow: 'ellipsis', pointerEvents: 'none',
+        }}
+      >
+        {state.pageName}
+      </div>
       {KINDS.map((kind, i) => (
         <div
           key={kind}
           title="Drag onto the page"
           style={{
-            position: 'absolute', left: PAD - 2, top: PAD - 2 + i * TILE, width: TILE, height: TILE,
+            position: 'absolute', left: PAD - 2, top: PIECES_TOP - 2 + i * TILE, width: TILE, height: TILE,
             display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'grab',
             background: drag?.kind === kind ? '#000' : 'transparent', pointerEvents: 'none',
           }}
@@ -304,6 +425,129 @@ function Tiles() {
           <Glyph kind={kind} size={Math.round(TILE * 0.62)} />
         </div>
       ))}
+      {/* A rule between the pieces and the page's Save / Load / Reset, and
+          another above the trash. */}
+      {[ACTIONS_TOP, TRASH_TOP].map(top => (
+        <div
+          key={top}
+          style={{
+            position: 'absolute', left: 0, top: top - 2 - line / 2 - (top === TRASH_TOP ? PAD / 2 : 0),
+            width: TILES_W - 2 * line, height: line, background: '#000', pointerEvents: 'none',
+          }}
+        />
+      ))}
+      {ACTIONS.map(action => {
+        const row = rowOf(action);
+        const dark =
+          pressed === action ||
+          (action === 'Load' && state.loadOpen) ||
+          action === state.armed ||
+          (action === 'Trash' && state.overTrash);
+        return (
+          <div
+            key={action}
+            title={action === state.armed ? `Tap again to ${action === 'Reset' ? 'reset' : 'clear'}` : action}
+            style={{
+              position: 'absolute', left: 0, top: row.top - 2,
+              width: TILES_W - 2 * line, height: row.h,
+              display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
+              background: dark ? '#000' : '#fff', pointerEvents: 'none',
+            }}
+          >
+            <ActionIcon action={action} color={dark ? '#fff' : '#000'} />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * The page's Save (a disk), Load (a folder), Copy (two pages) and Reset (a
+ * circling arrow), as line drawings on a 24-unit grid, for the Kotlin side
+ * to draw as Paths.
+ */
+function ActionIcon({ action, color }: { action: (typeof ACTIONS)[number]; color: string }) {
+  // The trash is a drop target: big, so a dragged piece finds it easily.
+  const size = Math.round(action === 'Trash' ? TRASH_H * 0.72 : ACTION_H * 0.62);
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" style={{ display: 'block' }}>
+      <g fill="none" stroke={color} strokeWidth={2.2} strokeLinejoin="round" strokeLinecap="round">
+        {action === 'Save' && (
+          <>
+            <path d="M4 3h13l3 3v15H4z" />
+            <path d="M8 3v5h8V3" />
+            <rect x="7" y="13" width="10" height="8" />
+          </>
+        )}
+        {action === 'Load' && (
+          <>
+            <path d="M3 6h7l2 2h9v12H3z" />
+            <path d="M3 11h18" />
+          </>
+        )}
+        {action === 'Copy' && (
+          <>
+            <path d="M9 7h11v14H9z" />
+            <path d="M15 7V3H4v14h5" />
+          </>
+        )}
+        {action === 'Reset' && (
+          <>
+            <path d="M19.5 13A7.5 7.5 0 1 1 17 6.4" />
+            <path d="M18 2.5v4.5h-4.5" />
+          </>
+        )}
+        {action === 'Trash' && (
+          <>
+            <path d="M4 7h16" />
+            <path d="M9.5 7V4h5v3" />
+            <path d="M6.5 7l1 13h9l1-13" />
+            <path d="M10.5 11v5.5M13.5 11v5.5" />
+          </>
+        )}
+      </g>
+    </svg>
+  );
+}
+
+/** The saved boards, from the palette's Load. Tap one to put it in place of this page. */
+function LoadList() {
+  const r = listRect()!;
+  const line = Math.max(2, TILE * 0.04);
+  return (
+    <div
+      style={{
+        ...abs(r), zIndex: 53, background: '#fff', boxSizing: 'border-box',
+        border: `${line}px solid #000`, userSelect: 'none', padding: PAD,
+        display: 'flex', flexDirection: 'column',
+      }}
+    >
+      <div style={{ height: NAME_H, font: 'bold 12px sans-serif', display: 'flex', alignItems: 'center' }}>
+        Load a new page.
+      </div>
+      {state.boards.length === 0 ? (
+        <div style={{ height: LIST_ROW, font: '13px sans-serif', color: '#555', display: 'flex', alignItems: 'center' }}>
+          No saved boards yet.
+        </div>
+      ) : (
+        state.boards.map(b => (
+          <div
+            key={b.keyword}
+            style={{
+              height: LIST_ROW, display: 'flex', alignItems: 'center', cursor: 'pointer',
+              borderTop: '1px solid #000', font: '14px sans-serif', whiteSpace: 'nowrap',
+              overflow: 'hidden', textOverflow: 'ellipsis',
+            }}
+            onPointerUp={() => {
+              set({ loadOpen: false });
+              emit({ type: 'load', keyword: b.keyword });
+            }}
+          >
+            {b.name}
+          </div>
+        ))
+      )}
     </div>
   );
 }
@@ -336,14 +580,20 @@ function PieceHandle({ id, piece }: { id: string; piece: Handle }) {
           setPress({ ...press, dragging: true });
           set({ masks: [...state.masks, { ...start, w: hs, h: hs }] });
         }
-        set({ carrying: { id, x: start.x + dx, y: start.y + dy } });
+        const overTrash = inside(trashRect(), e.clientX, e.clientY);
+        set({ carrying: { id, x: start.x + dx, y: start.y + dy }, overTrash });
       }}
       onPointerUp={e => {
         if (!press) return;
         setPress(null);
         if (!press.dragging || !state.carrying) return;
-        if (overControls(e.clientX, e.clientY)) {
+        if (inside(trashRect(), e.clientX, e.clientY)) {
+          set({ overTrash: false });
           emit({ type: 'remove', id });
+        } else if (overControls(e.clientX, e.clientY)) {
+          // Dropped on the button or the palette but not the trash: it goes
+          // back where it was, rather than being removed by a near miss.
+          set({ carrying: null, masks: [], overTrash: false });
         } else {
           emit({ type: 'move', id, ...point(state.carrying.x + hs / 2, state.carrying.y + hs / 2, e) });
         }
@@ -368,6 +618,7 @@ export default function PaletteOverlay() {
       {[...state.handles].map(([id, piece]) => <PieceHandle key={id} id={id} piece={piece} />)}
       <Button />
       {state.open && <Tiles />}
+      {state.open && state.loadOpen && <LoadList />}
       {state.ghost && (
         <div style={{ ...abs({ x: state.ghost.x - size / 2, y: state.ghost.y - size / 2, w: size, h: size }), pointerEvents: 'none', zIndex: 60 }}>
           <Glyph kind={state.ghost.kind} size={Math.round(size * 0.9)} />

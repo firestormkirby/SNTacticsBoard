@@ -205,9 +205,15 @@ export function templateOf(page: number, path?: string): string {
 }
 
 /** Every keyword on the listed pages, as getKeyWords reports them. */
-export function keywordsOn(pages: number[], path?: string): Array<{ keyword: string; page: number }> {
+/** Indexed from 1, as on a Manta: deleteKeyWord takes that, not the place. */
+export function keywordsOn(
+  pages: number[],
+  path?: string,
+): Array<{ keyword: string; page: number; index: number }> {
   const all = pagesOf(path);
-  return pages.flatMap(page => (all[page]?.keywords ?? []).map(keyword => ({ keyword, page })));
+  return pages.flatMap(page =>
+    (all[page]?.keywords ?? []).map((keyword, i) => ({ keyword, page, index: i + 1 })),
+  );
 }
 
 export function addKeyword(page: number, keyword: string, path?: string): void {
@@ -216,8 +222,8 @@ export function addKeyword(page: number, keyword: string, path?: string): void {
 
 export function removeKeyword(page: number, index: number, path?: string): boolean {
   const p = pageAt(page, path);
-  if (!p.keywords[index]) return false;
-  p.keywords.splice(index, 1);
+  if (!p.keywords[index - 1]) return false;
+  p.keywords.splice(index - 1, 1);
   return true;
 }
 

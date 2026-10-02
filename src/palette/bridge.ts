@@ -48,6 +48,17 @@ interface NativePalette {
   startTicking(intervalMs: number): void;
   stopTicking(): void;
   notify(message: string): void;
+  setBusy?(busy: boolean): void;
+  setPageName?(name: string): void;
+  wait?(ms: number): Promise<null>;
+  setBoards?(boards: BoardSpec[]): void;
+  folderSize?(path: string): Promise<number>;
+}
+
+/** A saved board, for the palette's Load list. */
+export interface BoardSpec {
+  keyword: string;
+  name: string;
 }
 
 /** Where a touch landed, in screen pixels, with what's needed to map it. */
@@ -70,15 +81,30 @@ export type PaletteEvent =
   | {type: 'position'; x: number; y: number}
   | {type: 'open'; open: boolean}
   | {type: 'tick'}
-  /** The pen is locked (on) or unlocked (off) around a pen drag. */
+  /** The palette's Save, Load (a board picked from its list), Copy, Reset. */
+  | {type: 'save'}
+  | {type: 'load'; keyword: string}
+  | {type: 'copy'}
+  /** The palette's Trash, tapped twice: clear the page. */
+  | {type: 'clear'}
+  | {type: 'reset'}
+  /** The pen is locked (on) or unlocked (off): for a pen drag, or a hover. */
   | {type: 'penLock'; on: boolean}
-  /** A pen drag on one of the windows began (active) or ended. */
-  | {type: 'penDrag'; active: boolean};
+  /**
+   * A pen drag on one of the windows began (active) or ended. As it begins:
+   * where from, and whether pen locking is on.
+   */
+  | {
+      type: 'penDrag';
+      active: boolean;
+      from?: 'button' | 'palette' | 'piece';
+      locks?: boolean;
+    };
 
-export const PALETTE_EVENT = 'SoccerPalette';
+export const PALETTE_EVENT = 'TacticsPalette';
 
 /** Looked up per call, so a module registered late is still found. */
-const mod = () => NativeModules.SoccerPalette as NativePalette | undefined;
+const mod = () => NativeModules.TacticsPalette as NativePalette | undefined;
 
 export const palette = {
   get available(): boolean {
@@ -98,6 +124,23 @@ export const palette = {
     mod()?.setPieces(pieces, size),
   startTicking: (intervalMs: number): void => mod()?.startTicking(intervalMs),
   stopTicking: (): void => mod()?.stopTicking(),
+  /** Note work is running: the pen isn't locked by a hover meanwhile. */
+  setBusy: (busy: boolean): void => mod()?.setBusy?.(busy),
+  /** The name tag on the palette: the page's board, or "Scratchpad". */
+  setPageName: (name: string): void => mod()?.setPageName?.(name),
+  /**
+   * Resolve after `ms`, timed natively: JS timers stop while the panel is
+   * closed. Without the native module, at once.
+   */
+  wait: (ms: number): Promise<unknown> =>
+    mod()?.wait?.(ms) ?? Promise.resolve(),
+  /** A folder's size in bytes, or null when it can't be told. */
+  folderSize: async (path: string): Promise<number | null> => {
+    const bytes = await mod()?.folderSize?.(path);
+    return typeof bytes === 'number' && bytes >= 0 ? bytes : null;
+  },
+  /** The boards the palette's Load list offers. */
+  setBoards: (boards: BoardSpec[]): void => mod()?.setBoards?.(boards),
   /** A message the user sees even with the panel closed. */
   notify: (message: string): boolean => {
     const m = mod();

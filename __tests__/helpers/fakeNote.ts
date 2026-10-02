@@ -28,6 +28,8 @@ export function createFakeNote(
     notes: new Map<string, Page[]>(),
     pages: [] as Page[],
     files: new Set<string>(),
+    /** A file's md5 where it isn't "md5:<path>", as a page on it reads. */
+    md5: new Map<string, string>(),
     calls: [] as string[],
   };
   state.notes.set(notePath, state.pages);
@@ -145,9 +147,11 @@ export function createFakeNote(
       getKeyWords: (path: string, pageList: number[]) =>
         ok(
           pageList.flatMap(page =>
-            (pagesOf(path)[page]?.keywords ?? []).map(keyword => ({
+            // Indexed from 1, as on a Manta: not the place in the list.
+            (pagesOf(path)[page]?.keywords ?? []).map((keyword, i) => ({
               keyword,
               page,
+              index: i + 1,
             })),
           ),
         ),
@@ -158,16 +162,17 @@ export function createFakeNote(
       },
       deleteKeyWord: (path: string, page: number, index: number) => {
         track('deleteKeyWord');
-        pagesOf(path)[page].keywords.splice(index, 1);
+        pagesOf(path)[page].keywords.splice(index - 1, 1);
         return ok(true);
       },
       getNotePageTemplate: (path: string, page: number) => {
+        // As the firmware: a PNG template by file name, and no path.
         const t = pagesOf(path)[page].template;
-        return ok(
-          t.includes('/')
-            ? {name: t.split('/').pop(), path: t}
-            : {name: t, path: ''},
-        );
+        const file = t.split('/').pop()!.replace(/\.png$/i, '');
+        return ok({
+          name: t.includes('/') ? `user_${file}` : t,
+          md5: `md5:${t}`,
+        });
       },
       generateNoteTemplatePng: (path: string, page: number, png: string) => {
         state.files.add(png);
@@ -188,6 +193,31 @@ export function createFakeNote(
       copyFile: (_from: string, to: string) => {
         state.files.add(to);
         return Promise.resolve(true);
+      },
+      // As the firmware: a page on a PNG reads the file's md5.
+      listFiles: (dir: string) =>
+        Promise.resolve(
+          [...state.files]
+            .filter(f => f.startsWith(`${dir}/`))
+            .map(f => f.slice(dir.length + 1)),
+        ),
+      getFileMD5: (path: string) =>
+        Promise.resolve(state.md5.get(path) ?? `md5:${path}`),
+      renameToFile: (from: string, to: string) => {
+        if (!state.files.delete(from)) {
+          return Promise.resolve(false);
+        }
+        state.files.add(to);
+        const note = state.notes.get(from);
+        if (note) {
+          state.notes.delete(from);
+          state.notes.set(to, note);
+        }
+        return Promise.resolve(true);
+      },
+      deleteFile: (path: string) => {
+        track('deleteFile');
+        return Promise.resolve(state.files.delete(path));
       },
     },
   };

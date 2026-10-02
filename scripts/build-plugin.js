@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * npm run build:plugin -> build/outputs/snsoccer.snplg
+ * npm run build:plugin -> build/outputs/tacticsboard.snplg
  *
  * Wraps the template's buildPlugin script with one extra step first.
  *

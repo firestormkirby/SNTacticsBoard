@@ -1,4 +1,4 @@
-package com.snsoccer.palette
+package com.tacticsboard.palette
 
 import android.annotation.SuppressLint
 import android.content.Context
@@ -27,7 +27,7 @@ import com.facebook.react.bridge.WritableMap
 import kotlin.math.abs
 
 /**
- * Soccer Board's floating button, palette and piece handles ("SoccerPalette").
+ * Tactics Board's floating button, palette and piece handles ("TacticsPalette").
  *
  * Every piece of UI here is its own small system overlay window
  * (TYPE_APPLICATION_OVERLAY) with FLAG_NOT_TOUCH_MODAL, the same arrangement
@@ -44,19 +44,22 @@ import kotlin.math.abs
  *           or the palette and it is removed. No mode to switch on.
  *
  * The windows only handle touch and drawing. Every change to the note is made
- * by JS (src/palette/controller.ts), from one event stream, "SoccerPalette",
+ * by JS (src/palette/controller.ts), from one event stream, "TacticsPalette",
  * whose `type` says what happened.
  *
  * PEN
  *           On a Supernote the pen also writes into the note through the
  *           digitizer, whatever window it's over, so a pen drag on these
- *           windows would draw a line. While one lasts, the pen is locked the
- *           way the Supernote plugin notes describe: the host's PluginApp is
- *           put in state 1, which makes the Note app disable the pen
- *           full-screen, and back in state 0 when the drag ends (reflection:
- *           the SDK's own showPluginView has no state argument). JS is told
- *           ("penLock", "penDrag") so it can keep its panel out of the way
- *           and clean up any stroke that got through before the lock landed.
+ *           windows would draw a line. So the pen is locked the way the
+ *           Supernote plugin notes describe: the host's PluginApp is put in
+ *           state 1, which makes the Note app disable the pen full-screen,
+ *           and back in state 0 afterwards (reflection: the SDK's own
+ *           showPluginView has no state argument). It locks as soon as the
+ *           pen hovers over one of the windows, before it touches, and at
+ *           the latest when a drag starts; it unlocks when the drag ends or
+ *           the pen hovers away. JS is told ("penLock", "penDrag") so it can
+ *           keep its panel out of the way and clean up any stroke that got
+ *           through before the lock landed.
  *
  * Details carried over from Modulanner's PlannerOverlayModule, which adapted
  * them from SuperDashboard by AgP42 (MIT, github.com/AgP42/SuperDashboard):
@@ -66,15 +69,15 @@ import kotlin.math.abs
  * suspends JS timers while the panel is closed, and a sweep for windows left
  * behind by a previous plugin load.
  */
-class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
+class TacticsPaletteModule(private val ctx: ReactApplicationContext) :
     ReactContextBaseJavaModule(ctx) {
 
     companion object {
-        const val NAME = "SoccerPalette"
-        const val EVENT = "SoccerPalette"
-        private const val TAG = "SoccerPalette"
+        const val NAME = "TacticsPalette"
+        const val EVENT = "TacticsPalette"
+        private const val TAG = "TacticsPalette"
         /** On every window this module adds, so orphans can be found. */
-        private const val VIEW_TAG = "SNSOCCER_OVERLAY"
+        private const val VIEW_TAG = "TACTICSBOARD_OVERLAY"
         private const val LONG_PRESS_MS = 800L
         private const val BUTTON_SP = 40f
 
@@ -85,6 +88,14 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
         private var open = false
         private var tiles: TilesView? = null
         private var tilesParams: WindowManager.LayoutParams? = null
+        /** The palette's name tag: the page's board, or Scratchpad. */
+        private var pageName = "Scratchpad"
+        /** Saved boards for the Load list: keyword to name. */
+        private var boards: List<Pair<String, String>> = emptyList()
+        private var loadList: LoadListView? = null
+        private var loadListParams: WindowManager.LayoutParams? = null
+        /** How long Reset or Trash waits for its second tap. */
+        private const val ARMED_MS = 3000L
         private val handles = LinkedHashMap<String, Pair<HandleView, WindowManager.LayoutParams>>()
         private var masks = mutableListOf<View>()
         private var ghost: GhostView? = null
@@ -99,6 +110,22 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
         private var penLocked = false
         /** Give the host's state change time to land either way. */
         private const val PEN_LOCK_SETTLE_MS = 200L
+        /** How long after an edit returns the Note app's redraw is on screen. */
+        private const val NOTE_REDRAW_MS = 900L
+        /** Longest a dropped piece is shown before the note has drawn it. */
+        private const val LANDING_TIMEOUT_MS = 5000L
+        /** After a pen tap on a piece tile, the longest the lock waits for a hover-away. */
+        private const val TAP_RELEASE_MS = 1500L
+        /** How long the pen may be away from our windows before a hover lock lifts. */
+        private const val HOVER_RELEASE_MS = 300L
+        /** JS is editing the note, so a hover mustn't open our view now. */
+        private var noteBusy = false
+        /** A touch on one of our windows is under way. */
+        private var touching = false
+        /** Where the pen last lifted, until it hovers out of the window there. */
+        private var liftX = 0
+        private var liftY = 0
+        private var liftHeld = false
     }
 
     override fun getName(): String = NAME
@@ -222,6 +249,16 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
             (open && rectOf(tilesParams)?.contains(xi, yi) == true)
     }
 
+    /**
+     * Keep the button and palette above a window just added at `r`. Only
+     * when they overlap: re-adding them makes them blink on e-ink.
+     */
+    private fun raiseControlsOver(r: Rect) {
+        val overlaps = rectOf(buttonParams)?.let { Rect.intersects(it, r) } == true ||
+            rectOf(tilesParams)?.let { Rect.intersects(it, r) } == true
+        if (overlaps) raiseControls()
+    }
+
     /** Keep the button and palette above the handles. */
     private fun raiseControls() {
         button?.let { v ->
@@ -275,12 +312,12 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
         }
     }
 
-    /** A pen drag on one of our windows has begun: lock the pen. */
-    private fun penDragStarted() {
-        emit("penDrag") { putBoolean("active", true) }
+    private fun lockPen(why: String) {
+        main.removeCallbacks(hoverRelease)
         if (!penLockEnabled || penLocked) return
         emit("penLock") { putBoolean("on", true) }
         penLocked = true
+        Log.i(TAG, "pen lock: on ($why)")
         // After the event, so JS knows why its view is about to open.
         main.post {
             if (!setPluginState(1)) {
@@ -290,20 +327,111 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
         }
     }
 
-    /** The drag has ended: unlock the pen, then carry on with `then`. */
-    private fun penDragEnded(then: () -> Unit) {
+    /**
+     * Unlock the pen, then carry on with `then` once the unlock has landed.
+     * JS hears of the unlock after `then`'s events, so a drop is already in
+     * its queue when the queue restarts, and a queued stroke clean-up can
+     * leave the strokes to the drop's edit.
+     */
+    private fun unlockPen(then: () -> Unit) {
+        main.removeCallbacks(hoverRelease)
         if (!penLocked) {
-            emit("penDrag") { putBoolean("active", false) }
             then()
             return
         }
         setPluginState(0)
         penLocked = false
         main.postDelayed({
+            then()
             emit("penLock") { putBoolean("on", false) }
+        }, PEN_LOCK_SETTLE_MS)
+    }
+
+    /**
+     * A pen drag on one of our windows has begun: lock the pen. `from` says
+     * which ("button", "palette" or "piece"), and `locks` whether locking is
+     * on: with it off, JS leaves the strokes a piece dragged on the page drew.
+     */
+    private fun penDragStarted(from: String) {
+        emit("penDrag") {
+            putBoolean("active", true)
+            putString("from", from)
+            putBoolean("locks", penLockEnabled)
+        }
+        lockPen("drag")
+    }
+
+    /** The drag has ended: unlock the pen, then carry on with `then`. */
+    private fun penDragEnded(then: () -> Unit) {
+        unlockPen {
             emit("penDrag") { putBoolean("active", false) }
             then()
-        }, PEN_LOCK_SETTLE_MS)
+        }
+    }
+
+    // ── The pen, before it touches ──────────────────────────────────────────
+    //
+    // Locking at the start of a drag is too late to keep the drag's first
+    // stretch of ink off the screen: the digitizer draws from the moment the
+    // pen lands, and the lock takes ~150 ms to reach the Note app. So the pen
+    // is locked as soon as it hovers over the button, the palette or a piece
+    // (the Wacom digitizer reports the pen in range before it touches), and
+    // unlocked once it has hovered away. A window the pen has just let go of
+    // doesn't lock again until the pen leaves it: after a drop or a move the
+    // pen is usually resting right over the piece it placed.
+
+    private val hoverRelease = Runnable {
+        if (!touching && penLocked) {
+            Log.i(TAG, "pen lock: off (hovered away)")
+            unlockPen {}
+        }
+    }
+
+    private fun touchStarted() {
+        touching = true
+        main.removeCallbacks(hoverRelease)
+    }
+
+    private fun touchEnded(rawX: Float, rawY: Float) {
+        touching = false
+        liftX = rawX.toInt()
+        liftY = rawY.toInt()
+        liftHeld = true
+    }
+
+    private fun windowRect(v: View): Rect? {
+        val p = when {
+            v === button -> buttonParams
+            v === tiles -> tilesParams
+            v is HandleView -> handles[v.id]?.second
+            else -> null
+        }
+        return rectOf(p)
+    }
+
+    private fun hoverMayLock(v: View): Boolean {
+        if (!penLockEnabled || penLocked || noteBusy || touching) return false
+        return !(liftHeld && windowRect(v)?.contains(liftX, liftY) == true)
+    }
+
+    private fun attachHover(v: View) {
+        v.setOnHoverListener { _, e ->
+            if (!isPen(e)) return@setOnHoverListener false
+            when (e.actionMasked) {
+                MotionEvent.ACTION_HOVER_ENTER, MotionEvent.ACTION_HOVER_MOVE -> {
+                    main.removeCallbacks(hoverRelease)
+                    if (hoverMayLock(v)) lockPen("hover")
+                }
+                MotionEvent.ACTION_HOVER_EXIT -> {
+                    if (windowRect(v)?.contains(liftX, liftY) == true) liftHeld = false
+                    if (penLocked && !touching) {
+                        main.removeCallbacks(hoverRelease)
+                        main.postDelayed(hoverRelease, HOVER_RELEASE_MS)
+                    }
+                }
+            }
+            false
+        }
     }
 
     // ── The palette's place ─────────────────────────────────────────────────
@@ -319,13 +447,122 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
         val below = b.y + b.height + gap
         p.y = if (below + t.heightPx <= m.heightPixels) below else maxOf(0, b.y - gap - t.heightPx)
         update(t, p)
+        placeLoadList()
+    }
+
+    /** The Load list beside the palette: left of it, or right if there's no room. */
+    private fun placeLoadList() {
+        val t = tilesParams ?: return
+        val v = loadList ?: return
+        val p = loadListParams ?: return
+        val m = metrics()
+        val gap = dp(6f)
+        p.x = if (t.x - v.widthPx - gap >= 0) t.x - v.widthPx - gap else t.x + t.width + gap
+        p.y = (t.y + t.height / 2).coerceIn(0, maxOf(0, m.heightPixels - v.heightPx))
+        update(v, p)
+    }
+
+    private fun showLoadList() {
+        hideLoadList()
+        val v = LoadListView(ctx, boards.map { it.second }, ctx.resources.displayMetrics.density)
+        attachLoadListTouches(v)
+        val p = params(v.widthPx, v.heightPx, true)
+        loadList = v
+        loadListParams = p
+        add(v, p)
+        placeLoadList()
+        tiles?.loadOpen = true
+    }
+
+    private fun hideLoadList() {
+        remove(loadList)
+        loadList = null
+        loadListParams = null
+        tiles?.loadOpen = false
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun attachLoadListTouches(v: LoadListView) {
+        v.setOnTouchListener { _, e ->
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> v.pressed = v.rowAt(e.y)
+                MotionEvent.ACTION_UP -> {
+                    val i = v.rowAt(e.y)
+                    v.pressed = -1
+                    if (i >= 0 && i < boards.size) {
+                        val keyword = boards[i].first
+                        hideLoadList()
+                        emit("load") { putString("keyword", keyword) }
+                    }
+                }
+                MotionEvent.ACTION_CANCEL -> v.pressed = -1
+            }
+            true
+        }
+    }
+
+    private val disarm = Runnable { tiles?.armed = null }
+
+    /**
+     * Reset and Trash take two taps: the first arms the icon (drawn inverted)
+     * and says so, a second within ARMED_MS acts. Anything else disarms it.
+     */
+    private fun twoTaps(t: TilesView, action: String, first: String, event: String) {
+        main.removeCallbacks(disarm)
+        if (t.armed != action) {
+            t.armed = action
+            main.postDelayed(disarm, ARMED_MS)
+            notify(first)
+        } else {
+            t.armed = null
+            emit(event)
+        }
+    }
+
+    /** Save, Load, Copy, Reset or Trash tapped on the palette. */
+    private fun onAction(action: String) {
+        val t = tiles ?: return
+        if (action != t.armed) {
+            main.removeCallbacks(disarm)
+            t.armed = null
+        }
+        when (action) {
+            Glyphs.SAVE -> {
+                hideLoadList()
+                emit("save")
+            }
+            Glyphs.LOAD -> if (loadList != null) hideLoadList() else showLoadList()
+            Glyphs.COPY -> {
+                hideLoadList()
+                emit("copy")
+            }
+            Glyphs.RESET -> {
+                hideLoadList()
+                twoTaps(t, action, "Tap again to reset this page.", "reset")
+            }
+            Glyphs.TRASH -> {
+                // Pieces are dragged onto it; tapped twice, it clears the page.
+                hideLoadList()
+                twoTaps(t, action, "Tap again to clear this page.", "clear")
+            }
+        }
+    }
+
+    /** Whether a screen point is over the palette's trash row. */
+    private fun overTrash(x: Float, y: Float): Boolean {
+        val t = tiles ?: return false
+        val p = tilesParams ?: return false
+        if (!open) return false
+        val (top, bottom) = t.trashBand()
+        return Rect(p.x, p.y + top, p.x + p.width, p.y + bottom).contains(x.toInt(), y.toInt())
     }
 
     private fun setOpen(value: Boolean) {
         open = value
         button?.invalidate()
         if (open && tiles == null && button != null) {
-            val t = TilesView(ctx, dp(56f))
+            val t = TilesView(ctx, dp(56f), ctx.resources.displayMetrics.density)
+            t.pageName = pageName
             attachTileTouches(t)
             val p = params(t.widthPx, t.heightPx, true)
             tiles = t
@@ -333,6 +570,7 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
             add(t, p)
             placeTiles()
         } else if (!open && tiles != null) {
+            hideLoadList()
             remove(tiles)
             tiles = null
             tilesParams = null
@@ -352,12 +590,15 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
         var pen = false
         val longPress = Runnable {
             longPressed = true
-            emit("longPress")
+            // A hover lock would keep the menu blank: lift it first.
+            unlockPen { emit("longPress") }
         }
+        attachHover(v)
         v.setOnTouchListener { _, e ->
             val p = buttonParams ?: return@setOnTouchListener false
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
+                    touchStarted()
                     startX = p.x
                     startY = p.y
                     downRawX = e.rawX
@@ -373,7 +614,7 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
                     if (!dragging && (abs(dx) > dp(6f) || abs(dy) > dp(6f))) {
                         dragging = true
                         main.removeCallbacks(longPress)
-                        if (pen) penDragStarted()
+                        if (pen) penDragStarted("button")
                     }
                     if (dragging) {
                         val m = metrics()
@@ -385,6 +626,7 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
                 }
                 MotionEvent.ACTION_UP -> {
                     main.removeCallbacks(longPress)
+                    touchEnded(e.rawX, e.rawY)
                     when {
                         longPressed -> {} // the hold already opened the menu
                         dragging -> penDragEnded {
@@ -401,6 +643,7 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
                 }
                 MotionEvent.ACTION_CANCEL -> {
                     main.removeCallbacks(longPress)
+                    touchEnded(e.rawX, e.rawY)
                     if (dragging) penDragEnded {}
                 }
             }
@@ -413,30 +656,84 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
     @SuppressLint("ClickableViewAccessibility")
     private fun attachTileTouches(t: TilesView) {
         var kind: String? = null
+        var action: String? = null
         var downRawX = 0f
         var downRawY = 0f
+        attachHover(t)
         t.setOnTouchListener { _, e ->
+            // Save / Load / Reset / Trash: a tap, done on lifting over the
+            // same one.
+            if (e.actionMasked == MotionEvent.ACTION_DOWN) {
+                action = t.actionAt(e.y)
+            }
+            val a = action
+            if (a != null) {
+                when (e.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        touchStarted()
+                        t.pressed = a
+                    }
+                    MotionEvent.ACTION_MOVE -> t.pressed = if (t.actionAt(e.y) == a) a else null
+                    MotionEvent.ACTION_UP -> {
+                        touchEnded(e.rawX, e.rawY)
+                        t.pressed = null
+                        action = null
+                        if (t.actionAt(e.y) == a) onAction(a)
+                    }
+                    MotionEvent.ACTION_CANCEL -> {
+                        touchEnded(e.rawX, e.rawY)
+                        t.pressed = null
+                        action = null
+                    }
+                }
+                return@setOnTouchListener true
+            }
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
+                    touchStarted()
                     kind = t.kindAt(e.y)
                     t.pressed = kind
                     downRawX = e.rawX
                     downRawY = e.rawY
                     kind?.let { showGhost(it, e.rawX, e.rawY) }
                     // A piece is always dragged out, so lock at once.
-                    if (kind != null && isPen(e)) penDragStarted()
+                    if (kind != null && isPen(e)) penDragStarted("palette")
                 }
                 MotionEvent.ACTION_MOVE -> moveGhost(e.rawX, e.rawY)
                 MotionEvent.ACTION_UP -> {
+                    touchEnded(e.rawX, e.rawY)
                     val k = kind
                     t.pressed = null
-                    hideGhost()
                     if (k != null) {
                         val moved = abs(e.rawX - downRawX) > dp(8f) || abs(e.rawY - downRawY) > dp(8f)
                         val rawX = e.rawX
                         val rawY = e.rawY
                         val tool = e.getToolType(0)
                         val over = overControls(rawX, rawY)
+                        if (moved && !over) {
+                            // Leave the piece showing where it landed until
+                            // the note has drawn it (setPieces), or a while.
+                            moveGhost(rawX, rawY)
+                            val landed = ghost
+                            main.postDelayed({ if (ghost === landed) hideGhost() }, LANDING_TIMEOUT_MS)
+                        } else {
+                            hideGhost()
+                        }
+                        if (!moved) {
+                            // A tap: the pen is still over the palette, likely
+                            // to drag next. Unlocking here let the next drag
+                            // start unlocked, and the Note app doesn't stop a
+                            // stroke already under way: the whole drag inked.
+                            // The lock stays until the pen hovers away.
+                            emit("penDrag") { putBoolean("active", false) }
+                            emit("tapPiece") { putString("kind", k) }
+                            // In case no hover-away comes (the pen lifted out
+                            // of range): hovering on over the palette cancels.
+                            main.removeCallbacks(hoverRelease)
+                            main.postDelayed(hoverRelease, TAP_RELEASE_MS)
+                            kind = null
+                            return@setOnTouchListener true
+                        }
                         penDragEnded {
                             if (moved && !over) {
                                 emit("drop") {
@@ -451,6 +748,7 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
                     kind = null
                 }
                 MotionEvent.ACTION_CANCEL -> {
+                    touchEnded(e.rawX, e.rawY)
                     t.pressed = null
                     hideGhost()
                     if (kind != null) penDragEnded {}
@@ -491,7 +789,19 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
 
     // ── Touch: moving a piece already on the page ───────────────────────────
 
+    /** A handle while it's carrying its piece: room to draw all of it. */
     private fun handleSize(): Int = (pieceSize * 1.15f).toInt()
+
+    /**
+     * A handle at rest: the middle of what the piece draws, not its box, so
+     * a line drawn close by doesn't pick the piece up. (The ball is drawn
+     * about half the box across; the others about four fifths.)
+     */
+    private fun hitSize(kind: String): Int = (pieceSize * when (kind) {
+        Glyphs.BALL -> 0.45f
+        Glyphs.DEFENDER -> 0.7f
+        else -> 0.65f
+    }).toInt()
 
     @SuppressLint("ClickableViewAccessibility")
     private fun attachHandleTouches(h: HandleView) {
@@ -501,10 +811,12 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
         var downRawY = 0f
         var dragging = false
         var pen = false
+        attachHover(h)
         h.setOnTouchListener { _, e ->
             val p = handles[h.id]?.second ?: return@setOnTouchListener false
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
+                    touchStarted()
                     startX = p.x
                     startY = p.y
                     downRawX = e.rawX
@@ -517,39 +829,65 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
                     val dy = e.rawY - downRawY
                     if (!dragging && (abs(dx) > dp(6f) || abs(dy) > dp(6f))) {
                         dragging = true
-                        if (pen) penDragStarted()
+                        if (pen) penDragStarted("piece")
+                        // Grow from the hit area to the whole piece, about
+                        // the same centre, to carry a drawn copy of it.
+                        val big = handleSize()
+                        startX += (p.width - big) / 2
+                        startY += (p.height - big) / 2
+                        p.width = big
+                        p.height = big
                         // Hide the piece the note is still drawing at its old
                         // spot, and let the handle carry a drawn copy.
                         val mask = MaskView(ctx)
-                        val mp = params(p.width, p.height, false)
+                        val mp = params(big, big, false)
                         mp.x = startX
                         mp.y = startY
                         try {
                             add(mask, mp)
                             masks.add(mask)
                         } catch (_: Exception) {}
+                        h.drags++
                         h.carrying = true
-                        raiseControls()
+                        rectOf(mp)?.let { raiseControlsOver(it) }
                     }
                     if (dragging) {
                         p.x = startX + dx.toInt()
                         p.y = startY + dy.toInt()
                         update(h, p)
+                        tiles?.overTrash = overTrash(e.rawX, e.rawY)
                     }
                 }
                 MotionEvent.ACTION_UP -> {
+                    touchEnded(e.rawX, e.rawY)
                     if (dragging) {
+                        tiles?.overTrash = false
+                        val trash = overTrash(e.rawX, e.rawY)
                         val over = overControls(e.rawX, e.rawY)
                         val cx = p.x + p.width / 2f
                         val cy = p.y + p.height / 2f
                         val tool = e.getToolType(0)
-                        penDragEnded {
-                            if (over) {
-                                emit("remove") { putString("id", h.id) }
-                            } else {
-                                emit("move") {
-                                    putString("id", h.id)
-                                    putPoint(cx, cy, tool)
+                        if (!trash && over) {
+                            // On the button or the palette but not the trash:
+                            // back where it was, not removed by a near miss.
+                            val hs = hitSize(h.kind)
+                            p.x = startX + (p.width - hs) / 2
+                            p.y = startY + (p.height - hs) / 2
+                            p.width = hs
+                            p.height = hs
+                            update(h, p)
+                            h.carrying = false
+                            clearMasks()
+                            penDragEnded {}
+                        } else {
+                            penDragEnded {
+                                if (trash) {
+                                    emit("remove") { putString("id", h.id) }
+                                } else {
+                                    emit("move") {
+                                        putString("id", h.id)
+                                        putPoint(cx, cy, tool)
+                                    }
                                 }
                             }
                         }
@@ -558,9 +896,14 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
                     // until JS has rewritten the page and calls setPieces.
                 }
                 MotionEvent.ACTION_CANCEL -> {
+                    touchEnded(e.rawX, e.rawY)
+                    tiles?.overTrash = false
                     if (dragging) {
-                        p.x = startX
-                        p.y = startY
+                        val hs = hitSize(h.kind)
+                        p.x = startX + (p.width - hs) / 2
+                        p.y = startY + (p.height - hs) / 2
+                        p.width = hs
+                        p.height = hs
                         update(h, p)
                         h.carrying = false
                         clearMasks()
@@ -570,6 +913,42 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
             }
             true
         }
+    }
+
+    /**
+     * The note has taken an edit (setPieces follows each one): take down
+     * what stood in for it while it did, the white patches over old spots,
+     * carried copies and a landed piece. Not at once: the Note app's redraw
+     * reaches the screen ~0.5 s after the edit returns, and until then the
+     * screen still shows the page as it was.
+     */
+    private fun settleLanding() {
+        val oldMasks = masks.toList()
+        masks.clear()
+        val landed = ghost
+        val carried = handles.values.map { it.first }.filter { it.carrying }.map { it to it.drags }
+        main.postDelayed({
+            oldMasks.forEach { remove(it) }
+            if (landed != null && ghost === landed) hideGhost()
+            // Unless it's been picked up again since.
+            carried.forEach { (h, drags) ->
+                if (h.drags == drags) {
+                    h.carrying = false
+                    shrinkToHit(h)
+                }
+            }
+        }, NOTE_REDRAW_MS)
+    }
+
+    /** Back from carrying size to the hit area, about the same centre. */
+    private fun shrinkToHit(h: HandleView) {
+        val p = handles[h.id]?.second ?: return
+        val hs = hitSize(h.kind)
+        p.x += (p.width - hs) / 2
+        p.y += (p.height - hs) / 2
+        p.width = hs
+        p.height = hs
+        update(h, p)
     }
 
     private fun clearMasks() {
@@ -666,10 +1045,15 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
     }
 
     private fun hideAll() {
+        main.removeCallbacks(hoverRelease)
         if (penLocked) {
             setPluginState(0)
             penLocked = false
         }
+        touching = false
+        liftHeld = false
+        main.removeCallbacks(disarm)
+        hideLoadList()
         hideGhost()
         clearMasks()
         handles.values.forEach { remove(it.first) }
@@ -697,7 +1081,7 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
         main.post {
             try {
                 pieceSize = size.toInt()
-                clearMasks()
+                settleLanding()
                 if (button == null) return@post
                 val want = LinkedHashMap<String, Triple<String, Float, Float>>()
                 for (i in 0 until pieces.size()) {
@@ -709,19 +1093,20 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
                 for (id in handles.keys.toList()) {
                     if (id !in want) remove(handles.remove(id)?.first)
                 }
-                val hs = handleSize()
-                var added = false
+                val added = mutableListOf<Rect>()
                 for ((id, spec) in want) {
                     val (kind, x, y) = spec
+                    val hs = hitSize(kind)
                     val existing = handles[id]
                     if (existing != null) {
                         val (v, p) = existing
                         v.kind = kind
-                        v.carrying = false
-                        p.width = hs
-                        p.height = hs
-                        p.x = (x - hs / 2f).toInt()
-                        p.y = (y - hs / 2f).toInt()
+                        // Still drawing its piece: full size until it settles.
+                        val s = if (v.carrying) handleSize() else hs
+                        p.width = s
+                        p.height = s
+                        p.x = (x - s / 2f).toInt()
+                        p.y = (y - s / 2f).toInt()
                         update(v, p)
                     } else {
                         val v = HandleView(ctx, id, kind)
@@ -731,10 +1116,13 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
                         p.y = (y - hs / 2f).toInt()
                         add(v, p)
                         handles[id] = v to p
-                        added = true
+                        rectOf(p)?.let { added.add(it) }
                     }
                 }
-                if (added) raiseControls()
+                added.firstOrNull { r ->
+                    rectOf(buttonParams)?.let { Rect.intersects(it, r) } == true ||
+                        rectOf(tilesParams)?.let { Rect.intersects(it, r) } == true
+                }?.let { raiseControlsOver(it) }
             } catch (e: Exception) {
                 Log.e(TAG, "setPieces: ${e.message}", e)
             }
@@ -768,6 +1156,61 @@ class SoccerPaletteModule(private val ctx: ReactApplicationContext) :
                 Log.w(TAG, "notify: $e")
             }
         }
+    }
+
+    /** The palette's name tag: the page's board, or "Scratchpad". */
+    @ReactMethod
+    fun setPageName(name: String) {
+        main.post {
+            pageName = name
+            tiles?.pageName = name
+        }
+    }
+
+    /** The saved boards the Load list offers: [{keyword, name}]. */
+    @ReactMethod
+    fun setBoards(list: ReadableArray) {
+        val next = (0 until list.size()).mapNotNull { i ->
+            val b = list.getMap(i) ?: return@mapNotNull null
+            val keyword = b.getString("keyword") ?: return@mapNotNull null
+            keyword to (b.getString("name") ?: keyword)
+        }
+        main.post {
+            boards = next
+            if (loadList != null) showLoadList() // redrawn with the new list
+        }
+    }
+
+    /** Resolve after `ms`: a timer for JS, whose own timers stop while the panel is closed. */
+    @ReactMethod
+    fun wait(ms: Double, promise: Promise) {
+        main.postDelayed({ promise.resolve(null) }, maxOf(0L, ms.toLong()))
+    }
+
+    /** JS is (or has stopped) editing the note: no hover lock meanwhile. */
+    /**
+     * The bytes in a folder's files, subfolders too, for the menu's Storage
+     * line: the SDK's FileUtils has no file sizes. Off the main thread; -1
+     * when the folder can't be read.
+     */
+    @ReactMethod
+    fun folderSize(path: String, promise: Promise) {
+        Thread {
+            try {
+                val total = java.io.File(path).walkTopDown()
+                    .filter { it.isFile }
+                    .sumOf { it.length() }
+                promise.resolve(total.toDouble())
+            } catch (e: Throwable) {
+                Log.w(TAG, "folderSize: $e")
+                promise.resolve(-1.0)
+            }
+        }.start()
+    }
+
+    @ReactMethod
+    fun setBusy(busy: Boolean) {
+        main.post { noteBusy = busy }
     }
 
     /** Emit "tick" every intervalMs, since JS timers stop with the panel closed. */

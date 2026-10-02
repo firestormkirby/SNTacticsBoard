@@ -135,8 +135,10 @@ const defaults: Record<string, Record<string, (...args: any[]) => any>> = {
     deleteKeyWord: (path: string, page: number, index: number) =>
       ok(removeKeyword(page, index, path)),
     getNotePageTemplate: (path: string, page: number) => {
+      // As the firmware: a PNG template by file name, and no path.
       const t = templateOf(page, path);
-      return ok(t.includes('/') ? { name: t.split('/').pop(), path: t } : { name: t, path: '' });
+      const file = t.split('/').pop()!.replace(/\.png$/i, '');
+      return ok({ name: t.includes('/') ? `user_${file}` : t, md5: `md5:${t}` });
     },
     getElements: (page: number, path?: string) => ok(elementsOn(page, path)),
     getElementNumList: () => ok([]),

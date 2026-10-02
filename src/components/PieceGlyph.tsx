@@ -6,7 +6,7 @@
  *   ▲  cone           a solid triangle
  *   ●  ball           a small solid disc
  *
- * Each glyph sits on a white halo, so a piece dropped on a pitch line stays
+ * Each glyph sits on a white halo, so a piece dropped on a field line stays
  * legible instead of merging into the black.
  */
 import React from 'react';

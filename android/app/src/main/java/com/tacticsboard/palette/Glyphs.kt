@@ -1,8 +1,9 @@
-package com.snsoccer.palette
+package com.tacticsboard.palette
 
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.RectF
 
 /**
  * Draws the four pieces the same way the JS side draws them on the page
@@ -16,6 +17,64 @@ object Glyphs {
     const val BALL = "ball"
 
     val KINDS = listOf(ATTACKER, DEFENDER, CONE, BALL)
+
+    const val SAVE = "save"
+    const val LOAD = "load"
+    const val COPY = "copy"
+    const val RESET = "reset"
+    const val TRASH = "trash"
+
+    /** The page's actions under the pieces; the trash has its own row. */
+    val PAGE_ACTIONS = listOf(SAVE, LOAD, COPY, RESET)
+
+    private val line = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+    }
+
+    /**
+     * An action's icon centred on (cx, cy), `size` pixels across: a disk
+     * (save), a folder (load), two pages (copy), a circling arrow (reset), a
+     * bin (trash). Line
+     * drawings on a 24-unit grid, the same paths as the preview's SVGs.
+     */
+    fun drawAction(canvas: Canvas, action: String, cx: Float, cy: Float, size: Float, color: Int) {
+        val u = size / 24f
+        val path = Path()
+        fun m(x: Float, y: Float) = path.moveTo(cx + (x - 12) * u, cy + (y - 12) * u)
+        fun l(x: Float, y: Float) = path.lineTo(cx + (x - 12) * u, cy + (y - 12) * u)
+        when (action) {
+            SAVE -> {
+                m(4f, 3f); l(17f, 3f); l(20f, 6f); l(20f, 21f); l(4f, 21f); path.close()
+                m(8f, 3f); l(8f, 8f); l(16f, 8f); l(16f, 3f)
+                m(7f, 13f); l(17f, 13f); l(17f, 21f); l(7f, 21f); path.close()
+            }
+            LOAD -> {
+                m(3f, 6f); l(10f, 6f); l(12f, 8f); l(21f, 8f); l(21f, 20f); l(3f, 20f); path.close()
+                m(3f, 11f); l(21f, 11f)
+            }
+            COPY -> {
+                m(9f, 7f); l(20f, 7f); l(20f, 21f); l(9f, 21f); path.close()
+                m(15f, 7f); l(15f, 3f); l(4f, 3f); l(4f, 17f); l(9f, 17f)
+            }
+            RESET -> {
+                val r = 7.5f * u
+                path.addArc(RectF(cx - r, cy + u - r, cx + r, cy + u + r), 0f, 310f)
+                m(18f, 2.5f); l(18f, 7f); l(13.5f, 7f)
+            }
+            TRASH -> {
+                m(4f, 7f); l(20f, 7f)
+                m(9.5f, 7f); l(9.5f, 4f); l(14.5f, 4f); l(14.5f, 7f)
+                m(6.5f, 7f); l(7.5f, 20f); l(16.5f, 20f); l(17.5f, 7f)
+                m(10.5f, 11f); l(10.5f, 16.5f)
+                m(13.5f, 11f); l(13.5f, 16.5f)
+            }
+        }
+        line.color = color
+        line.strokeWidth = maxOf(1.5f, 2.2f * u)
+        canvas.drawPath(path, line)
+    }
 
     private val ink = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF000000.toInt() }
     private val paper = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFFFFF.toInt() }

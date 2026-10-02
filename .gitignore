@@ -80,3 +80,6 @@ android_native_deps.txt
 
 # UI preview
 tools/ui-preview/dist/
+
+# Machine-specific device and tool paths for the scripts/ device helpers
+devconfig.json

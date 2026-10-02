@@ -42,16 +42,18 @@ const mockPalette = {
   stopTicking: jest.fn(),
   notify: jest.fn((_message: string) => {}),
 };
-NativeModules.SoccerPalette = mockPalette;
+NativeModules.TacticsPalette = mockPalette;
 
 import {
+  clearPage,
   closePanelThen,
   copyThisPage,
   getCurrentPieces,
   handle,
+  loadBoardHere,
   loadLayoutAsPage,
-  loadLayoutHere,
   saveThisPage,
+  setAutoCleanup,
   pageToScreen,
   panelOpened,
   screenToPage,
@@ -63,7 +65,11 @@ import {
 import {PALETTE_EVENT} from '../src/palette/bridge';
 import {getContext, readPieces} from '../src/page/pageOps';
 import {loadPaletteSettings} from '../src/palette/settings';
-import {deleteLayout, listLayouts} from '../src/layouts/layoutStore';
+import {
+  deleteLayout,
+  listLayouts,
+  listVersions,
+} from '../src/layouts/layoutStore';
 
 const at = (x: number, y: number, rotation = 0) => ({
   x,
@@ -144,7 +150,7 @@ describe('pieces', () => {
     await handle({type: 'drop', kind: 'cone', ...at(300, 500, 1)});
     expect(await readPieces(await getContext())).toEqual([]);
     expect((mockPalette.notify.mock.calls[0] as string[])[0]).toMatch(
-      /upright/,
+      /Rotation is not supported yet/,
     );
   });
 
@@ -246,7 +252,7 @@ describe('menu actions', () => {
     );
   });
 
-  const LIB = '/storage/emulated/0/EXPORT/SNSoccer/Layouts.note';
+  const LIB = '/storage/emulated/0/EXPORT/SNTacticsBoard/Layouts.note';
   const libPages = () => mockNote.state.notes.get(LIB) ?? [];
   const tags = () => libPages().map(p => p.keywords.join(' '));
   const closeMenu = async () => {
@@ -284,16 +290,58 @@ describe('menu actions', () => {
     ]);
   });
 
-  it('names the template: a pitch page, and copies of it, are Soccer Field', async () => {
+  it('names the template: a page on your own PNG, and copies of it', async () => {
     mockNote.state.pages[0].template =
-      '/storage/emulated/0/EXPORT/SNSoccer/pitch-1404x1872.png';
-    await saveThisPage('On the pitch');
-    await copyThisPage(); // page 2 is a copy of the pitch page
+      '/storage/emulated/0/MyStyle/Futsal Court.png';
+    await saveThisPage('On the court');
+    await copyThisPage(); // page 2 is a copy of it
     await saveThisPage('From a copy');
     expect(tags()).toEqual([
-      '~BOARD:Soccer Field:On the pitch',
-      '~BOARD:Soccer Field:From a copy',
+      '~BOARD:Futsal Court:On the court',
+      '~BOARD:Futsal Court:From a copy',
     ]);
+  });
+
+  it('renders a background once, and loads onto the same one in place', async () => {
+    const render = jest.spyOn(
+      mockNote.sdk.PluginFileAPI,
+      'generateNoteTemplatePng',
+    );
+    await saveThisPage('A');
+    const bg = '/storage/emulated/0/EXPORT/SNTacticsBoard/White.png';
+    expect(libPages()[0].template).toBe(bg); // named for its template
+
+    // A built-in template can't be swapped in place: the page is replaced,
+    // onto the render.
+    await loadBoardHere('~BOARD:White:A');
+    expect(mockNote.state.pages[0].template).toBe(bg);
+
+    // Saved from there, and loaded onto it again: the render is used again,
+    // the page keeps its template's name, and the load is in place.
+    await saveThisPage('B');
+    expect(tags()).toContain('~BOARD:White:B');
+    mockNote.state.pages[0].keywords.push('~BOARD:White:Stray'); // two names
+    mockNote.state.calls.length = 0;
+    expect(await loadBoardHere('~BOARD:White:A')).toMatch(/^Loaded "A"\./);
+    expect(mockNote.state.pages[0].keywords).toEqual(['~BOARD:White:A']);
+    // The name on the page came in the same edit: one label, the new name.
+    const labels = mockNote.state.pages[0].elements.filter(
+      (e: any) => e.userData === 'tacticsboard:v1:label',
+    );
+    expect(labels.map((e: any) => e.textBox.textContentFull)).toEqual(['A']);
+    expect(mockNote.state.calls).not.toContain('insertNotePage');
+    expect(mockNote.state.calls).not.toContain('removeNotePage');
+    expect(mockNote.state.pages).toHaveLength(1);
+    expect(render).toHaveBeenCalledTimes(1);
+  });
+
+  it('cleans up once when the automatic clean-up is switched on', async () => {
+    await saveThisPage('A');
+    const stray = '/storage/emulated/0/EXPORT/SNTacticsBoard/page-mun5oiqe.png';
+    mockNote.state.files.add(stray);
+    await setAutoCleanup(true);
+    await closeMenu();
+    expect(mockNote.state.files.has(stray)).toBe(false);
   });
 
   it('finds pages by keyword, wherever they are in the note', async () => {
@@ -307,11 +355,18 @@ describe('menu actions', () => {
     expect(mockNote.state.pages[1].template).toBe(b.background);
   });
 
-  it('replaces a page saved again under the same name', async () => {
+  it('replaces a page saved again under the same name, keeping the old as a version', async () => {
     await saveThisPage('A');
     await saveThisPage('B');
     await saveThisPage('a');
-    expect(tags()).toEqual(['~BOARD:White:B', '~BOARD:White:a']);
+    const all = tags();
+    expect(all.filter(t => t.startsWith('~BOARD:'))).toEqual([
+      '~BOARD:White:B',
+      '~BOARD:White:a',
+    ]);
+    expect(all.filter(t => t.startsWith('~OLD:'))).toEqual([
+      expect.stringMatching(/^~OLD:A:[0-9a-z]{6}$/),
+    ]);
     expect((await listLayouts()).map(l => l.name)).toEqual(['a', 'B']);
   });
 
@@ -335,6 +390,40 @@ describe('menu actions', () => {
     ]);
   });
 
+  it('clears a page to a blank Scratchpad, keeping it as a version as Reset does', async () => {
+    mockNote.state.pages[0].elements.push({type: 0, numInPage: 900});
+    await handle({type: 'drop', kind: 'cone', ...at(300, 500)});
+    await saveThisPage('A');
+    await handle({type: 'drop', kind: 'ball', ...at(600, 500)}); // changed since
+
+    expect(await clearPage()).toBe(
+      'Cleared this page. The page as it was is under Previous versions.',
+    );
+    expect(mockNote.state.pages[0].elements).toEqual([]);
+    expect(mockNote.state.pages[0].keywords).toEqual([]); // the Scratchpad
+    expect(mockNote.state.pages).toHaveLength(1); // cleared in place
+    expect(tags()).toContain('~BOARD:White:A'); // the board itself stays
+    expect(tags().filter(t => t.startsWith('~OLD:A:'))).toHaveLength(1);
+
+    // A blank page: nothing to keep.
+    expect(await clearPage()).toBe('Cleared this page.');
+  });
+
+  it('deletes a layout with its previous versions', async () => {
+    await saveThisPage('A');
+    await saveThisPage('A'); // the first becomes a version of A
+    await saveThisPage('B');
+    await closeMenu();
+    expect((await listVersions()).map(v => v.name)).toEqual(['A']);
+
+    await deleteLayout((await listLayouts()).find(l => l.name === 'A')!.id);
+    // Off the menu at once; out of the layouts note once it closes.
+    expect(await listVersions()).toEqual([]);
+    await closeMenu();
+    expect(tags()).toEqual(['~BOARD:White:B']);
+    expect(await listVersions()).toEqual([]);
+  });
+
   it("leaves the last page, untagged, when it can't be removed", async () => {
     await saveThisPage('Only');
     await deleteLayout((await listLayouts())[0].id);
@@ -349,28 +438,12 @@ describe('menu actions', () => {
     const [old] = await listLayouts();
     libPages()[0].keywords = [];
     await AsyncStorage.setItem(
-      'snsoccer:layouts:v1',
+      'tacticsboard:layouts:v1',
       JSON.stringify([{...old, keyword: undefined, libPage: 0}]),
     );
     await closeMenu();
     expect(tags()).toEqual(['~BOARD:White:Old']);
     expect((await listLayouts())[0].keyword).toBe('~BOARD:White:Old');
-  });
-
-  it('loads a layout in place of the pieces on the page', async () => {
-    await handle({type: 'drop', kind: 'cone', ...at(300, 500)});
-    const msg = await loadLayoutHere('Rondo', [
-      {kind: 'attacker', x: 0.5, y: 0.5},
-      {kind: 'ball', x: 0.25, y: 0.75},
-    ]);
-    expect(msg).toBe('Loaded "Rondo".');
-    const pieces = await readPieces(await getContext());
-    expect(pieces.map(p => [p.kind, p.x, p.y]).sort()).toEqual(
-      [
-        ['attacker', 702, 936],
-        ['ball', 351, 1404],
-      ].sort(),
-    );
   });
 
   it('explains failures', async () => {
@@ -415,6 +488,134 @@ describe('the work queue', () => {
     );
     const pieces = await readPieces(await getContext());
     expect(pieces.map(p => p.kind)).toEqual(['ball']);
+  });
+
+  it("copies the page from the palette's Copy", async () => {
+    startPaletteController();
+    await settle();
+    emit({type: 'copy'});
+    await settle();
+    expect(mockNote.state.pages).toHaveLength(2);
+    expect(mockPalette.notify).toHaveBeenCalledWith('Copied to page 2.');
+  });
+
+  it('drops Save / Load / Reset taps while one is still running', async () => {
+    startPaletteController();
+    await settle();
+    // Hold the first one up in the note, as a slow Reset would be.
+    const real = mockNote.sdk.PluginCommAPI.getCurrentFilePath;
+    let release = () => {};
+    mockNote.sdk.PluginCommAPI.getCurrentFilePath = () =>
+      new Promise(done => {
+        release = () => done(real());
+      });
+    emit({type: 'reset'});
+    emit({type: 'reset'});
+    emit({type: 'reset'});
+    await settle();
+    expect(
+      mockPalette.notify.mock.calls.filter(
+        c => c[0] === 'Still working on the last one.',
+      ),
+    ).toHaveLength(2);
+    mockNote.sdk.PluginCommAPI.getCurrentFilePath = real;
+    release();
+    await settle();
+    // Done: the next tap is taken.
+    mockPalette.notify.mockClear();
+    emit({type: 'reset'});
+    await settle();
+    expect(mockPalette.notify).not.toHaveBeenCalledWith(
+      'Still working on the last one.',
+    );
+  });
+
+  it('says to lift the pen when a Reset waits on it', async () => {
+    startPaletteController();
+    await settle();
+    emit({type: 'penLock', on: true}); // the pen still hovering by the palette
+    emit({type: 'reset'});
+    await tick(1);
+    expect(mockPalette.notify).not.toHaveBeenCalledWith(
+      'Lift the pen away to reset.',
+    );
+    await tick(1);
+    expect(mockPalette.notify).toHaveBeenCalledWith(
+      'Lift the pen away to reset.',
+    );
+    // Once: then only for another tap.
+    await tick(3);
+    emit({type: 'reset'});
+    await settle();
+    const hints = () =>
+      mockPalette.notify.mock.calls.filter(
+        c => c[0] === 'Lift the pen away to reset.',
+      ).length;
+    expect(hints()).toBe(2);
+
+    emit({type: 'penLock', on: false});
+    await settle();
+    expect(mockPalette.notify).toHaveBeenCalledWith(
+      "This page hasn't been saved yet, so there's nothing to reset it to.",
+    );
+  });
+
+  describe("where the pen can't write", () => {
+    // The wait for canHandwrite's answer, timed natively: never over, or
+    // over at once.
+    const waitForever = () => new Promise(() => {});
+    afterEach(() => {
+      delete (mockPalette as any).wait;
+    });
+
+    it('hides the button, and brings it back', async () => {
+      (mockPalette as any).wait = waitForever;
+      let can: unknown = {success: true, result: false};
+      (mockNote.sdk.PluginCommAPI as any).canHandwrite = async () => can;
+      startPaletteController();
+      await settle();
+      mockPalette.show.mockClear();
+      await tick(1); // one "no": a blink, it stays
+      expect(mockPalette.hide).not.toHaveBeenCalled();
+      await tick(1);
+      expect(mockPalette.hide).toHaveBeenCalledTimes(1);
+      await tick(2); // stays hidden, and isn't hidden again
+      expect(mockPalette.hide).toHaveBeenCalledTimes(1);
+      expect(mockPalette.show).not.toHaveBeenCalled();
+
+      can = {success: true, result: true};
+      await tick(1);
+      expect(mockPalette.show).toHaveBeenCalledTimes(1);
+    });
+
+    it('counts an error (Files view, Settings) as no', async () => {
+      (mockPalette as any).wait = waitForever;
+      (mockNote.sdk.PluginCommAPI as any).canHandwrite = async () => ({
+        success: false,
+        error: {
+          code: 102,
+          message:
+            'This app is not allowed to use this API. Please call a different API.',
+        },
+      });
+      startPaletteController();
+      await settle();
+      await tick(2);
+      expect(mockPalette.hide).toHaveBeenCalledTimes(1);
+    });
+
+    it("counts no answer as no, and doesn't read the page meanwhile", async () => {
+      (mockPalette as any).wait = () => Promise.resolve(); // over at once
+      (mockNote.sdk.PluginCommAPI as any).canHandwrite = () =>
+        new Promise(() => {}); // never answers
+      const reads = jest.spyOn(mockNote.sdk.PluginCommAPI, 'getCurrentPageNum');
+      startPaletteController();
+      await settle();
+      reads.mockClear();
+      await tick(2);
+      expect(mockPalette.hide).toHaveBeenCalledTimes(1);
+      expect(reads).not.toHaveBeenCalled();
+    });
   });
 
   it('shows messages in its own window while the menu is closed', async () => {
@@ -469,5 +670,26 @@ describe('the pen', () => {
     mockPenUp?.onMsg([stroke(802), {type: 700, numInPage: 803}]);
     await settle();
     expect(page.elements.map(e => e.numInPage)).toEqual([801, 803]);
+  });
+
+  it("with locking off, erases a palette drag's line but leaves a page drag's", async () => {
+    startPaletteController();
+    await settle();
+    const page = mockNote.state.pages[0];
+    page.elements.push(stroke(801), stroke(802));
+
+    // A piece dragged on the page: its line stays, like any pen stroke.
+    emit({type: 'penDrag', active: true, from: 'piece', locks: false});
+    emit({type: 'penDrag', active: false});
+    mockPenUp?.onMsg([stroke(801)]);
+    await settle();
+    expect(page.elements.map(e => e.numInPage)).toEqual([801, 802]);
+
+    // A piece brought from the palette: its line goes.
+    emit({type: 'penDrag', active: true, from: 'palette', locks: false});
+    emit({type: 'penDrag', active: false});
+    mockPenUp?.onMsg([stroke(802)]);
+    await settle();
+    expect(page.elements.map(e => e.numInPage)).toEqual([801]);
   });
 });

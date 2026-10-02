@@ -14,6 +14,12 @@
  * apart. That reads as solid at any pen width the firmware turns out to use:
  * the SDK's docs don't give `penWidth` units, only a minimum of 100.
  *
+ * Each shape is as few elements as it can be, because the Note app takes
+ * ~60 ms to insert each one: a drop's wait is mostly that. The nested
+ * outlines are joined into one polygon, which the firmware draws as an open
+ * line through its points, so a single element can zigzag or spiral to fill
+ * a shape. The X is two elements, since its bars cross.
+ *
  * Every element carries a `userData` tag naming the piece, its id and its
  * centre, which is how the plugin finds its own pieces on a page again.
  */
@@ -57,32 +63,44 @@ export function pieceSizeFor(pageWidth: number): number {
 const r1 = (n: number) => Math.round(n * 10) / 10;
 const pt = (x: number, y: number): Point => ({x: r1(x), y: r1(y)});
 
+/** A closed circle as points about 4 px apart, starting at the right. */
+function ring(c: Point, r: number): Point[] {
+  const n = Math.max(12, Math.round((2 * Math.PI * r) / 4));
+  const points: Point[] = [];
+  for (let i = 0; i <= n; i++) {
+    const a = (2 * Math.PI * i) / n;
+    points.push(pt(c.x + r * Math.cos(a), c.y + r * Math.sin(a)));
+  }
+  return points;
+}
+
 /** The geometry for one piece, centred on `c`, `size` pixels across. */
 export function shapesFor(kind: PieceKind, c: Point, size: number): GeoSpec[] {
   switch (kind) {
     case 'attacker': {
+      // Each bar is three parallel passes, so the X is as heavy as the O,
+      // drawn there and back as one line.
       const h = size * 0.4;
-      const shapes: GeoSpec[] = [];
-      // Three parallel strokes per bar, so the X is as heavy as the O.
-      for (const o of [-FILL_STEP / 2, 0, FILL_STEP / 2]) {
-        shapes.push({
-          type: 'straightLine',
-          points: [pt(c.x - h + o, c.y - h - o), pt(c.x + h + o, c.y + h - o)],
+      const offsets = [-FILL_STEP / 2, 0, FILL_STEP / 2];
+      const bar = (from: Point, to: Point, nx: number, ny: number) => {
+        const points: Point[] = [];
+        offsets.forEach((o, i) => {
+          const [a, b] = i % 2 === 0 ? [from, to] : [to, from];
+          points.push(pt(a.x + nx * o, a.y + ny * o));
+          points.push(pt(b.x + nx * o, b.y + ny * o));
         });
-        shapes.push({
-          type: 'straightLine',
-          points: [pt(c.x - h - o, c.y + h - o), pt(c.x + h - o, c.y - h - o)],
-        });
-      }
-      return shapes;
+        return {type: 'GEO_polygon' as const, points};
+      };
+      return [
+        bar({x: c.x - h, y: c.y - h}, {x: c.x + h, y: c.y + h}, 1, -1),
+        bar({x: c.x - h, y: c.y + h}, {x: c.x + h, y: c.y - h}, -1, -1),
+      ];
     }
     case 'defender': {
+      // A heavy ring: three turns, each a little inside the last.
       const r = size * 0.42;
-      return [0, 1, 2].map(i => ({
-        type: 'GEO_circle' as const,
-        center: pt(c.x, c.y),
-        radius: r1(r - i * FILL_STEP * 0.7),
-      }));
+      const points = [0, 1, 2].flatMap(i => ring(c, r - i * FILL_STEP * 0.7));
+      return [{type: 'GEO_polygon', points}];
     }
     case 'cone': {
       // Apex up, centred in the piece box.
@@ -91,32 +109,28 @@ export function shapesFor(kind: PieceKind, c: Point, size: number): GeoSpec[] {
       const apex = {x: c.x, y: c.y - hgt / 2};
       const left = {x: c.x - w / 2, y: c.y + hgt / 2};
       const right = {x: c.x + w / 2, y: c.y + hgt / 2};
-      // Shrink toward the centroid until the triangle is a speck.
+      // Shrink toward the centroid until the triangle is a speck. Each
+      // triangle goes back to its apex: three points left the left side off.
       const g = {x: c.x, y: c.y + hgt / 6};
-      const shapes: GeoSpec[] = [];
+      const points: Point[] = [];
       const steps = Math.max(1, Math.floor(hgt / 3 / FILL_STEP));
       for (let i = 0; i <= steps; i++) {
         const k = 1 - i / (steps + 1);
         const toward = (p: Point) =>
           pt(g.x + (p.x - g.x) * k, g.y + (p.y - g.y) * k);
-        shapes.push({
-          type: 'GEO_polygon',
-          points: [toward(apex), toward(right), toward(left)],
-        });
+        points.push(toward(apex), toward(right), toward(left), toward(apex));
       }
-      return shapes;
+      return [{type: 'GEO_polygon', points}];
     }
     case 'ball': {
+      // A spiral of shrinking rings down to the centre.
       const r = size * 0.26;
-      const shapes: GeoSpec[] = [];
+      const points: Point[] = [];
       for (let rad = r; rad > 0.5; rad -= FILL_STEP) {
-        shapes.push({
-          type: 'GEO_circle',
-          center: pt(c.x, c.y),
-          radius: r1(rad),
-        });
+        points.push(...ring(c, rad));
       }
-      return shapes;
+      points.push(pt(c.x, c.y));
+      return [{type: 'GEO_polygon', points}];
     }
   }
 }
@@ -153,7 +167,7 @@ export function shapeBounds(shapes: GeoSpec[]): {
 
 // ── Tags ────────────────────────────────────────────────────────────────────
 
-const TAG_PREFIX = 'snsoccer:v1';
+const TAG_PREFIX = 'tacticsboard:v1';
 
 export interface PieceTag {
   kind: PieceKind;

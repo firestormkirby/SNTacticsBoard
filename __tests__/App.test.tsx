@@ -3,7 +3,7 @@ import ReactTestRenderer from 'react-test-renderer';
 import {NativeModules} from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-NativeModules.SoccerPalette = {
+NativeModules.TacticsPalette = {
   canDrawOverlays: jest.fn(async () => false),
   requestOverlayPermission: jest.fn(),
   getScreenInfo: jest.fn(async () => ({
@@ -47,7 +47,7 @@ beforeEach(async () => {
 });
 
 it('switches the button on and off with a toggle', async () => {
-  NativeModules.SoccerPalette.canDrawOverlays.mockResolvedValue(true);
+  NativeModules.TacticsPalette.canDrawOverlays.mockResolvedValue(true);
   const root = await mount();
   const toggle = () => button(root, 'Floating button');
   expect(toggle().props.accessibilityState).toEqual({checked: false});
@@ -55,48 +55,49 @@ it('switches the button on and off with a toggle', async () => {
   await ReactTestRenderer.act(async () => toggle().props.onPress());
   expect(toggle().props.accessibilityState).toEqual({checked: true});
   expect((await loadPaletteSettings()).visible).toBe(true);
-  expect(text(root)).toContain('It appears when you close this menu.');
+  // Nothing to report when all is well: the button simply comes up.
+  expect(text(root)).not.toContain('Open settings');
 
   await ReactTestRenderer.act(async () => toggle().props.onPress());
   expect((await loadPaletteSettings()).visible).toBe(false);
-  expect(NativeModules.SoccerPalette.hide).toHaveBeenCalled();
+  expect(NativeModules.TacticsPalette.hide).toHaveBeenCalled();
 });
 
 it("says so when Android won't let the button show", async () => {
-  NativeModules.SoccerPalette.canDrawOverlays.mockResolvedValue(false);
+  NativeModules.TacticsPalette.canDrawOverlays.mockResolvedValue(false);
   const root = await mount();
   await ReactTestRenderer.act(async () =>
     button(root, 'Floating button').props.onPress(),
   );
-  expect(text(root)).toContain('display over other');
+  expect(text(root)).toContain('Overlay permissions not working');
   await ReactTestRenderer.act(async () =>
     button(root, 'Open settings').props.onPress(),
   );
   expect(
-    NativeModules.SoccerPalette.requestOverlayPermission,
+    NativeModules.TacticsPalette.requestOverlayPermission,
   ).toHaveBeenCalled();
 });
 
-it('offers both exports and lists saved layouts', async () => {
-  NativeModules.SoccerPalette.canDrawOverlays.mockResolvedValue(true);
+it('offers Save, not Copy (the palette has it), and lists saved layouts', async () => {
+  NativeModules.TacticsPalette.canDrawOverlays.mockResolvedValue(true);
   const size = {width: 1404, height: 1872};
   await saveLayout('Old pieces', [{kind: 'cone', x: 10, y: 10}], size, 1);
   await saveLayout('Rondo 4v2', [{kind: 'ball', x: 9, y: 9}], size, 2, {
-    keyword: '~BOARD:Soccer Field:Rondo 4v2',
-    template: 'Soccer Field',
+    keyword: '~BOARD:Futsal Court:Rondo 4v2',
+    template: 'Futsal Court',
     background: 'bg.png',
     marks: 12,
   });
   const root = await mount();
   const t = text(root);
-  expect(t).toContain('Copy to a new page');
+  expect(t).not.toContain('Copy this page');
   expect(t).toContain('Save this page');
-  expect(t).toContain('Soccer Field page with 1 piece and drawing');
+  expect(t).toContain('Futsal Court template with 1 piece and drawings');
   expect(t).toContain('1 piece only');
   const count = (label: string) =>
     t.split(`"accessibilityLabel":"${label}"`).length - 1;
   expect(count('New page')).toBe(1);
-  expect(count('Pieces here')).toBe(2);
+  expect(count('Pieces here')).toBe(0);
 
   // Save needs a name, then closes the menu to read the page.
   expect(button(root, 'Save').props.disabled).toBe(true);
@@ -104,7 +105,8 @@ it('offers both exports and lists saved layouts', async () => {
     root.root
       .find(
         n =>
-          n.props.accessibilityLabel === 'Layout name' && n.props.onChangeText,
+          n.props.placeholder === 'Name, e.g. Rondo 4v2' &&
+          n.props.onChangeText,
       )
       .props.onChangeText('Warm-up'),
   );
@@ -114,7 +116,7 @@ it('offers both exports and lists saved layouts', async () => {
   expect(PluginManager.closePluginView).toHaveBeenCalled();
 });
 
-it('asks for file access, and holds back the exports until it has it', async () => {
+it('asks for file access, and holds back file work until it has it', async () => {
   const {PluginManager} = require('sn-plugin-lib');
   PluginManager.hasPermission.mockResolvedValue(0);
   PluginManager.requestPermission.mockResolvedValueOnce(0);
@@ -124,7 +126,7 @@ it('asks for file access, and holds back the exports until it has it', async () 
     expect.any(String),
   );
   expect(text(root)).toContain('Allow file access');
-  expect(button(root, 'Copy to a new page').props.disabled).toBe(true);
+  expect(button(root, 'Clean up now').props.disabled).toBe(true);
 
   // Allowed the second time round.
   PluginManager.requestPermission.mockResolvedValue(2);
@@ -132,6 +134,21 @@ it('asks for file access, and holds back the exports until it has it', async () 
     button(root, 'Allow file access').props.onPress(),
   );
   expect(text(root)).not.toContain('Allow file access');
-  expect(button(root, 'Copy to a new page').props.disabled).toBe(false);
+  expect(button(root, 'Clean up now').props.disabled).toBe(false);
   PluginManager.hasPermission.mockResolvedValue(1);
+});
+
+it('folds the Saved layouts list away, and remembers', async () => {
+  const size = {width: 1404, height: 1872};
+  await saveLayout('Corners drill', [{kind: 'ball', x: 9, y: 9}], size, 2);
+  const root = await mount();
+  expect(text(root)).toContain('Corners drill');
+
+  await ReactTestRenderer.act(async () => button(root, '1 ▴').props.onPress());
+  expect(text(root)).not.toContain('Corners drill');
+  const {loadPaletteSettings} = require('../src/palette/settings');
+  expect((await loadPaletteSettings()).layoutsOpen).toBe(false);
+
+  await ReactTestRenderer.act(async () => button(root, '1 ▾').props.onPress());
+  expect(text(root)).toContain('Corners drill');
 });

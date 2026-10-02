@@ -19,15 +19,10 @@ PluginManager.init();
 // Listens to the floating palette whether or not the panel is open.
 startPaletteController();
 
-// NOTE only: pieces and pitch pages go into a .note file, which DOC can't take.
+// NOTE only: pieces go into a .note file, which DOC can't take.
 PluginManager.registerButton(1, ['NOTE'], {
   id: 100,
-  name: JSON.stringify({
-    en: 'Soccer Board',
-    zh_CN: '足球战术板',
-    zh_TW: '足球戰術板',
-    ja: 'サッカー作戦ボード',
-  }),
+  name: JSON.stringify({en: 'Tactics Board'}),
   icon: Image.resolveAssetSource(require('./assets/icon.png')).uri,
   showType: 1,
 });
