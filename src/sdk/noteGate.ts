@@ -14,17 +14,31 @@
  * panel is closed.
  */
 
-/** The Note app's reload after an edit: done within this, on a Manta. */
-export const AFTER_EDIT_MS = 400;
+/**
+ * The Note app's reload after an edit: it starts ~20-60 ms after the edit
+ * and takes 200-700 ms on a Manta (longer on a busier page). An edit 500 ms
+ * after the last one crashed it; 1.3 s apart never has.
+ */
+export const AFTER_EDIT_MS = 1000;
 /** After the pen lock lifts: the reload it may start, and then some. */
-export const AFTER_UNLOCK_MS = 700;
+export const AFTER_UNLOCK_MS = 1000;
 
 let quietAt = 0;
 let sleep: (ms: number) => Promise<unknown> = () => Promise.resolve();
+let lockQuiet: () => Promise<unknown> = () => Promise.resolve();
 
 /** How to wait. Set by the controller; without it nothing waits (tests). */
 export function setSleeper(fn: (ms: number) => Promise<unknown>): void {
   sleep = fn;
+}
+
+/**
+ * How to wait out the pen lock's own reloads: the native palette knows
+ * exactly when the lock last turned on or off, where JS hears of it late.
+ * Set by the controller; without it nothing waits (tests).
+ */
+export function setLockQuiet(fn: () => Promise<unknown>): void {
+  lockQuiet = fn;
 }
 
 /** The note will be busy for `ms` from now: edits wait until after. */
@@ -46,6 +60,9 @@ export async function whenNoteQuiet(): Promise<void> {
  */
 export async function pageEdit<T>(edit: () => Promise<T>): Promise<T> {
   await whenNoteQuiet();
+  // Then the lock's reloads, timed natively: a lock or unlock JS hasn't
+  // heard of yet still has the Note app reloading.
+  await lockQuiet();
   try {
     return await edit();
   } finally {
@@ -57,4 +74,5 @@ export async function pageEdit<T>(edit: () => Promise<T>): Promise<T> {
 export function resetNoteGate(): void {
   quietAt = 0;
   sleep = () => Promise.resolve();
+  lockQuiet = () => Promise.resolve();
 }

@@ -290,3 +290,7 @@ The Kotlin was compiled against the Android framework and React Native
 - **Rotation.** Placing and moving are limited to the upright screen for now,
   and the button says so when turned. Turned pages need the screen-to-page
   mapping measured on a device.
+
+## Contact
+
+Bug reports and feature requests: sebastiancraftco@gmail.com

@@ -82,7 +82,16 @@ const state = {
   armed: null as null | 'Reset' | 'Trash',
   /** A carried piece is over the trash: dropping it there removes it. */
   overTrash: false,
+  /**
+   * The plugin is working on the page, or was until WAITING_AFTER_MS ago:
+   * hourglass, "Working…", pieces greyed and not to be grabbed.
+   */
+  waiting: false,
 };
+const WAITING_AFTER_MS = 1000;
+let waitTimer: number | null = null;
+const toast = (detail: string) =>
+  window.dispatchEvent(new CustomEvent('preview-toast', { detail }));
 const listeners = new Set<() => void>();
 let version = 0;
 function set(patch: Partial<typeof state>) {
@@ -206,6 +215,12 @@ NativeModules.TacticsPalette = {
   setBusy: () => {},
   wait: (ms: number) => new Promise(done => window.setTimeout(() => done(null), ms)),
   setPageName: (name: string) => set({ pageName: name }),
+  setWorking: (on: boolean) => {
+    if (waitTimer !== null) window.clearTimeout(waitTimer);
+    if (on) set({ waiting: true });
+    else waitTimer = window.setTimeout(() => set({ waiting: false }), WAITING_AFTER_MS);
+  },
+  whenQuiet: () => Promise.resolve(null),
   setBoards: (boards: Array<{ keyword: string; name: string }>) => set({ boards }),
   // The browser has no folder to measure: the Manta's, after a clean-up.
   folderSize: () => Promise.resolve(27 * 1024 * 1024),
@@ -318,7 +333,11 @@ function Button() {
         }
       }}
     >
-      <PitchIcon size={(BUTTON / 2 - stroke) * 1.25} color={ink} />
+      {state.waiting ? (
+        <span style={{ color: ink, font: `bold ${Math.round(BUTTON * 0.5)}px sans-serif` }}>⧗</span>
+      ) : (
+        <PitchIcon size={(BUTTON / 2 - stroke) * 1.25} color={ink} />
+      )}
     </div>
   );
 }
@@ -376,6 +395,10 @@ function Tiles() {
         const i = Math.floor((y - PIECES_TOP) / TILE);
         const kind = y >= PIECES_TOP ? KINDS[i] : undefined;
         if (!kind) return;
+        if (state.waiting) {
+          toast('One moment…');
+          return;
+        }
         (e.currentTarget as Element).setPointerCapture(e.pointerId);
         setDrag({ kind, downX: e.clientX, downY: e.clientY });
         set({ ghost: { kind, x: e.clientX, y: e.clientY } });
@@ -410,7 +433,7 @@ function Tiles() {
           textOverflow: 'ellipsis', pointerEvents: 'none',
         }}
       >
-        {state.pageName}
+        {state.waiting ? 'Working…' : state.pageName}
       </div>
       {KINDS.map((kind, i) => (
         <div
@@ -420,6 +443,7 @@ function Tiles() {
             position: 'absolute', left: PAD - 2, top: PIECES_TOP - 2 + i * TILE, width: TILE, height: TILE,
             display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'grab',
             background: drag?.kind === kind ? '#000' : 'transparent', pointerEvents: 'none',
+            opacity: state.waiting ? 0.3 : 1,
           }}
         >
           <Glyph kind={kind} size={Math.round(TILE * 0.62)} />
@@ -565,8 +589,14 @@ function PieceHandle({ id, piece }: { id: string; piece: Handle }) {
       style={{
         ...abs({ ...at, w: hs, h: hs }), zIndex: carried ? 51 : 50, cursor: 'grab', touchAction: 'none',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
+        borderRadius: '50%',
+        background: state.waiting && !carried ? 'rgba(0,0,0,0.25)' : 'transparent',
       }}
       onPointerDown={e => {
+        if (state.waiting) {
+          toast('One moment…');
+          return;
+        }
         (e.target as Element).setPointerCapture(e.pointerId);
         setPress({ downX: e.clientX, downY: e.clientY, dragging: false });
       }}

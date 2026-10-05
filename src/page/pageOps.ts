@@ -396,6 +396,10 @@ export async function placePiece(
   alsoDelete: number[] = [],
   layer?: number,
 ): Promise<PagePiece> {
+  // Saved first, as before every edit of a piece: without it, the Note app
+  // crashed now and then on the edit (Bitmap.recycle in TransferModeView,
+  // seen on a Manta), and reads of the page came back out of date.
+  check(await PluginNoteAPI.saveCurrentNote(), 'saveCurrentNote');
   const tag: PieceTag = {kind, id: newPieceId(), ...clampToPage(ctx, at)};
   layer ??= await piecesLayer(ctx, true);
   const size = pieceSizeFor(ctx.pageSize.width);
@@ -429,7 +433,7 @@ export async function movePiece(
   id: string,
   to: Point,
 ): Promise<PieceTag | null> {
-  const pieces = await readPieces(ctx, {save: false});
+  const pieces = await readPieces(ctx); // saves first: see placePiece
   const piece = pieces.find(p => p.id === id);
   if (!piece) {
     return null;
@@ -480,7 +484,7 @@ export async function removePiece(
   ctx: PageContext,
   id: string,
 ): Promise<boolean> {
-  const pieces = await readPieces(ctx, {save: false});
+  const pieces = await readPieces(ctx); // saves first: see placePiece
   const piece = pieces.find(p => p.id === id);
   if (!piece) {
     return false;

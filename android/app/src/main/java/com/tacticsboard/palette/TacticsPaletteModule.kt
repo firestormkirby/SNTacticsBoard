@@ -129,7 +129,23 @@ class TacticsPaletteModule(private val ctx: ReactApplicationContext) :
          * TransferModeView), so the pen isn't locked before then either.
          */
         private var noteQuietAt = 0L
-        private const val NOTE_SETTLE_MS = 700L
+        private const val NOTE_SETTLE_MS = 1000L
+        /**
+         * When (uptime ms) the pen lock last turned on or off: each makes the
+         * Note app reload the page (up to ~700 ms on a Manta). An edit from JS
+         * during that reload crashes it, so edits wait LOCK_RELOAD_MS after.
+         */
+        private var lockChangedAt = 0L
+        private const val LOCK_RELOAD_MS = 1000L
+        /**
+         * JS is working on the page for the user (a drop, a move, a save...),
+         * or did until WAITING_AFTER_MS ago: the edits that follow wait that
+         * long, so a piece grabbed meanwhile would only sit there. The button,
+         * palette and handles show it, and pieces can't be grabbed.
+         */
+        private var working = false
+        private var waitingShown = false
+        private const val WAITING_AFTER_MS = 1000L
         /** A touch on one of our windows is under way. */
         private var touching = false
         /** Where the pen last lifted, until it hovers out of the window there. */
@@ -291,6 +307,7 @@ class TacticsPaletteModule(private val ctx: ReactApplicationContext) :
 
     /** PluginApp.showPluginView(int), reached through NativePluginManager. */
     private fun setPluginState(state: Int): Boolean {
+        lockChangedAt = SystemClock.uptimeMillis()
         return try {
             val manager = ctx.getNativeModule("NativePluginManager") ?: run {
                 Log.w(TAG, "pen lock: no NativePluginManager module")
@@ -582,6 +599,7 @@ class TacticsPaletteModule(private val ctx: ReactApplicationContext) :
         if (open && tiles == null && button != null) {
             val t = TilesView(ctx, dp(56f), ctx.resources.displayMetrics.density)
             t.pageName = pageName
+            t.waiting = waitingShown
             attachTileTouches(t)
             val p = params(t.widthPx, t.heightPx, true)
             tiles = t
@@ -711,6 +729,11 @@ class TacticsPaletteModule(private val ctx: ReactApplicationContext) :
                 MotionEvent.ACTION_DOWN -> {
                     touchStarted()
                     kind = t.kindAt(e.y)
+                    if (kind != null && waitingShown) {
+                        // Greyed: it would only wait behind the work going on.
+                        kind = null
+                        notify("One moment…")
+                    }
                     t.pressed = kind
                     downRawX = e.rawX
                     downRawY = e.rawY
@@ -837,9 +860,17 @@ class TacticsPaletteModule(private val ctx: ReactApplicationContext) :
         var downRawY = 0f
         var dragging = false
         var pen = false
+        var refused = false
         attachHover(h)
         h.setOnTouchListener { _, e ->
             val p = handles[h.id]?.second ?: return@setOnTouchListener false
+            if (e.actionMasked == MotionEvent.ACTION_DOWN) {
+                refused = waitingShown
+                if (refused) notify("One moment…")
+            }
+            // Grabbed while the page work goes on: it would only wait behind
+            // it. Taken (so the pen doesn't write), but nothing moves.
+            if (refused) return@setOnTouchListener true
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     touchStarted()
@@ -1038,6 +1069,7 @@ class TacticsPaletteModule(private val ctx: ReactApplicationContext) :
                         TypedValue.COMPLEX_UNIT_SP, BUTTON_SP, ctx.resources.displayMetrics,
                     ).toInt()
                     val v = BubbleView(ctx) { open }
+                    v.waiting = waitingShown
                     attachButtonTouches(v)
                     val p = params(size, size, true)
                     p.x = m.widthPixels - size - dp(16f)
@@ -1139,6 +1171,7 @@ class TacticsPaletteModule(private val ctx: ReactApplicationContext) :
                         update(v, p)
                     } else {
                         val v = HandleView(ctx, id, kind)
+                        v.waiting = waitingShown
                         attachHandleTouches(v)
                         val p = params(hs, hs, true)
                         p.x = (x - hs / 2f).toInt()
@@ -1235,6 +1268,52 @@ class TacticsPaletteModule(private val ctx: ReactApplicationContext) :
                 promise.resolve(-1.0)
             }
         }.start()
+    }
+
+    /**
+     * Resolve once the Note app isn't reloading for the pen lock: the pen
+     * unlocked, and LOCK_RELOAD_MS since the lock last changed. JS asks before
+     * every page edit; only this side knows exactly when the lock changed
+     * (JS hears of it late). While JS is editing (setBusy) no lock is taken,
+     * so the quiet holds through the edit.
+     */
+    @ReactMethod
+    fun whenQuiet(promise: Promise) {
+        main.post { checkQuiet(promise) }
+    }
+
+    private fun checkQuiet(promise: Promise) {
+        val wait = if (penLocked) 100L
+        else lockChangedAt + LOCK_RELOAD_MS - SystemClock.uptimeMillis()
+        if (wait <= 0) {
+            promise.resolve(null)
+        } else {
+            main.postDelayed({ checkQuiet(promise) }, wait)
+        }
+    }
+
+    /**
+     * JS is (true) or isn't (false) working on the page for the user. The
+     * waiting look stays up WAITING_AFTER_MS after, while the edits that
+     * follow would still wait.
+     */
+    @ReactMethod
+    fun setWorking(on: Boolean) {
+        main.post {
+            working = on
+            main.removeCallbacks(endWaiting)
+            if (on) showWaiting(true) else main.postDelayed(endWaiting, WAITING_AFTER_MS)
+        }
+    }
+
+    private val endWaiting = Runnable { if (!working) showWaiting(false) }
+
+    private fun showWaiting(on: Boolean) {
+        if (waitingShown == on) return
+        waitingShown = on
+        button?.waiting = on
+        tiles?.waiting = on
+        handles.values.forEach { it.first.waiting = on }
     }
 
     @ReactMethod

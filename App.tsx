@@ -72,6 +72,9 @@ const LEGEND: Array<{kind: PieceKind; label: string}> = [
   {kind: 'ball', label: 'Ball'},
 ];
 
+/** Where users send bug reports and feature requests. */
+const CONTACT_EMAIL = 'sebastiancraftco@gmail.com';
+
 const MONTHS = 'Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec'.split(' ');
 const dateOf = (ms: number) => {
   const d = new Date(ms);
@@ -487,6 +490,10 @@ export default function App(): React.JSX.Element {
               ))}
             </View>
           </Section>
+
+          <Text style={styles.contact} selectable>
+            Bug reports and feature requests: {CONTACT_EMAIL}
+          </Text>
         </ScrollView>
 
         {/* Over the card, not instead of it, so the menu keeps its scroll
@@ -892,6 +899,14 @@ const styles = StyleSheet.create({
   layoutName: {fontSize: z(19), fontWeight: 'bold', color: INK},
   layoutMeta: {fontSize: z(15), color: DIM, marginTop: z(2)},
   hint: {fontSize: z(15), lineHeight: z(21), color: DIM},
+  contact: {
+    fontSize: z(15),
+    lineHeight: z(21),
+    color: DIM,
+    borderTopWidth: zb(2),
+    borderTopColor: INK,
+    paddingTop: z(12),
+  },
 
   legend: {flexDirection: 'row', flexWrap: 'wrap', gap: z(24)},
   legendItem: {flexDirection: 'row', alignItems: 'center', gap: z(10)},

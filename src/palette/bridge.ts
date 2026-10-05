@@ -53,6 +53,8 @@ interface NativePalette {
   wait?(ms: number): Promise<null>;
   setBoards?(boards: BoardSpec[]): void;
   folderSize?(path: string): Promise<number>;
+  whenQuiet?(): Promise<null>;
+  setWorking?(on: boolean): void;
 }
 
 /** A saved board, for the palette's Load list. */
@@ -124,6 +126,11 @@ export const palette = {
     mod()?.setPieces(pieces, size),
   startTicking: (intervalMs: number): void => mod()?.startTicking(intervalMs),
   stopTicking: (): void => mod()?.stopTicking(),
+  /**
+   * Work the user is waiting on is going on (true) or done (false): the
+   * button, palette and handles show it, and pieces can't be grabbed.
+   */
+  setWorking: (on: boolean): void => mod()?.setWorking?.(on),
   /** Note work is running: the pen isn't locked by a hover meanwhile. */
   setBusy: (busy: boolean): void => mod()?.setBusy?.(busy),
   /** The name tag on the palette: the page's board, or "Scratchpad". */
@@ -134,6 +141,11 @@ export const palette = {
    */
   wait: (ms: number): Promise<unknown> =>
     mod()?.wait?.(ms) ?? Promise.resolve(),
+  /**
+   * Resolve once the Note app isn't reloading for a pen lock change, which
+   * only the native side times exactly. Without the native module, at once.
+   */
+  whenQuiet: (): Promise<unknown> => mod()?.whenQuiet?.() ?? Promise.resolve(),
   /** A folder's size in bytes, or null when it can't be told. */
   folderSize: async (path: string): Promise<number | null> => {
     const bytes = await mod()?.folderSize?.(path);

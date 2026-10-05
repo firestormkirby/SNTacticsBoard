@@ -143,6 +143,41 @@ object Glyphs {
         canvas.drawRect(cx - bw / 2, t + h - bh, cx + bw / 2, t + h, p)
     }
 
+    /** An hourglass, for "working": two triangles tip to tip, with caps. */
+    fun drawHourglass(canvas: Canvas, cx: Float, cy: Float, size: Float, color: Int) {
+        val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            this.color = color
+            style = Paint.Style.STROKE
+            strokeWidth = maxOf(2f, size * 0.08f)
+            strokeJoin = Paint.Join.ROUND
+            strokeCap = Paint.Cap.ROUND
+        }
+        val w = size * 0.42f
+        val h = size * 0.56f
+        val top = cy - h / 2
+        val bottom = cy + h / 2
+        canvas.drawLine(cx - w / 2 - size * 0.06f, top, cx + w / 2 + size * 0.06f, top, p)
+        canvas.drawLine(cx - w / 2 - size * 0.06f, bottom, cx + w / 2 + size * 0.06f, bottom, p)
+        val glass = Path().apply {
+            moveTo(cx - w / 2, top)
+            lineTo(cx + w / 2, top)
+            lineTo(cx, cy)
+            lineTo(cx + w / 2, bottom)
+            lineTo(cx - w / 2, bottom)
+            lineTo(cx, cy)
+            close()
+        }
+        canvas.drawPath(glass, p)
+        // The sand, run mostly through.
+        p.style = Paint.Style.FILL
+        canvas.drawPath(Path().apply {
+            moveTo(cx, bottom - h * 0.22f)
+            lineTo(cx + w * 0.3f, bottom)
+            lineTo(cx - w * 0.3f, bottom)
+            close()
+        }, p)
+    }
+
     private fun triangle(cx: Float, cy: Float, w: Float, h: Float): Path =
         Path().apply {
             moveTo(cx, cy - h / 2)

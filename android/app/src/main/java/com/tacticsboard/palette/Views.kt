@@ -15,9 +15,14 @@ import android.view.View
  * in TacticsPaletteModule, which owns the windows and moves them.
  */
 
-/** The floating button: a round chip with the pitch icon. Inverted while open. */
+/**
+ * The floating button: a round chip with the pitch icon. Inverted while open;
+ * an hourglass instead while the plugin is working on the page.
+ */
 @SuppressLint("ViewConstructor")
 class BubbleView(context: Context, private val isOpen: () -> Boolean) : View(context) {
+    var waiting = false
+        set(value) { if (field != value) { field = value; invalidate() } }
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
@@ -33,10 +38,12 @@ class BubbleView(context: Context, private val isOpen: () -> Boolean) : View(con
         canvas.drawCircle(w / 2, w / 2, r, fill)
         ring.strokeWidth = stroke
         canvas.drawCircle(w / 2, w / 2, r, ring)
-        Glyphs.drawPitchIcon(
-            canvas, w / 2, w / 2, r * 1.25f,
-            if (open) 0xFFFFFFFF.toInt() else 0xFF000000.toInt(),
-        )
+        val color = if (open) 0xFFFFFFFF.toInt() else 0xFF000000.toInt()
+        if (waiting) {
+            Glyphs.drawHourglass(canvas, w / 2, w / 2, r * 1.1f, color)
+        } else {
+            Glyphs.drawPitchIcon(canvas, w / 2, w / 2, r * 1.25f, color)
+        }
     }
 }
 
@@ -71,6 +78,10 @@ class TilesView(context: Context, val tile: Int, density: Float) : View(context)
     /** A piece being dragged is over the trash. */
     var overTrash = false
         set(value) { if (field != value) { field = value; invalidate() } }
+    /** The plugin is working on the page: "Working…", and the pieces greyed. */
+    var waiting = false
+        set(value) { if (field != value) { field = value; invalidate() } }
+    private val wash = Paint().apply { color = 0xB3FFFFFF.toInt() }
 
     private val ink = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF000000.toInt() }
     private val paper = Paint().apply { color = 0xFFFFFFFF.toInt() }
@@ -108,7 +119,8 @@ class TilesView(context: Context, val tile: Int, density: Float) : View(context)
         canvas.drawRect(line / 2, line / 2, w - line / 2, height - line / 2, ink)
 
         // The name tag, cut short with an ellipsis when it doesn't fit.
-        val name = TextUtils.ellipsize(pageName, text, w - 2 * pad, TextUtils.TruncateAt.END)
+        val label = if (waiting) "Working…" else pageName
+        val name = TextUtils.ellipsize(label, text, w - 2 * pad, TextUtils.TruncateAt.END)
         val baseline = nameH / 2f - (text.descent() + text.ascent()) / 2
         canvas.drawText(name, 0, name.length, w / 2, baseline, text)
         rule(canvas, nameH.toFloat(), line)
@@ -120,6 +132,13 @@ class TilesView(context: Context, val tile: Int, density: Float) : View(context)
                 canvas.drawRect(pad.toFloat(), top, (pad + tile).toFloat(), top + tile, ink)
             }
             Glyphs.draw(canvas, kind, pad + tile / 2f, top + tile / 2f, tile * 0.62f)
+        }
+        if (waiting) {
+            // Greyed: not to be dragged out until the page work is done.
+            canvas.drawRect(
+                line, piecesTop.toFloat(), w - line,
+                (piecesTop + Glyphs.KINDS.size * tile).toFloat(), wash,
+            )
         }
 
         rule(canvas, actionsTop - pad / 2f, line)
@@ -232,9 +251,14 @@ class HandleView(context: Context, val id: String, var kind: String) : View(cont
             field = value
             invalidate()
         }
+    /** The plugin is working on the page: a grey wash over the piece. */
+    var waiting = false
+        set(value) { if (field != value) { field = value; invalidate() } }
+    private val wash = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x40000000 }
 
     override fun onDraw(canvas: Canvas) {
         if (carrying) Glyphs.draw(canvas, kind, width / 2f, height / 2f, width * 0.85f)
+        else if (waiting) canvas.drawCircle(width / 2f, height / 2f, width / 2f, wash)
     }
 }
 

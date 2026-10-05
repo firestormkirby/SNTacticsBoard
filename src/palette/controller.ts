@@ -74,6 +74,7 @@ import {
   noteBusyFor,
   pageEdit,
   resetNoteGate,
+  setLockQuiet,
   setSleeper,
   whenNoteQuiet,
 } from '../sdk/noteGate';
@@ -1189,7 +1190,44 @@ interface Job {
 }
 
 const jobs: Job[] = [];
-let running: {ticks: number; limit: number; giveUp: () => void} | null = null;
+let running: {
+  job: Job;
+  ticks: number;
+  limit: number;
+  giveUp: () => void;
+} | null = null;
+
+/**
+ * Whether a job is work the user would wait on: while one is queued or
+ * running, the palette shows it (setWorking) and pieces can't be grabbed,
+ * since a drag then would only sit behind it.
+ */
+function showsWaiting(job: Job): boolean {
+  // Page edits only: the once-a-second tick, taps, moving the button and
+  // opening the tray are quick reads, and showing them would flash the
+  // hourglass. The stray-stroke delete after a drop is an edit too, and
+  // the next drag would wait behind it.
+  return (
+    job.work === flushDragStrokes ||
+    (job.kind !== undefined && PAGE_EDITS.has(job.kind))
+  );
+}
+
+const PAGE_EDITS: ReadonlySet<PaletteEvent['type']> = new Set<
+  PaletteEvent['type']
+>(['drop', 'move', 'remove', 'save', 'load', 'copy', 'reset', 'clear']);
+
+let workingShown = false;
+
+/** Tell the palette whether user-facing work is queued or running. */
+function updateWorking(): void {
+  const on =
+    (running !== null && showsWaiting(running.job)) || jobs.some(showsWaiting);
+  if (on !== workingShown) {
+    workingShown = on;
+    palette.setWorking(on);
+  }
+}
 
 function enqueue(
   work: () => Promise<void>,
@@ -1198,6 +1236,7 @@ function enqueue(
   limit = WATCHDOG_TICKS,
 ): void {
   jobs.push({work, quiet, kind, limit});
+  updateWorking();
   runJobs();
 }
 
@@ -1213,7 +1252,7 @@ function runJobs(): void {
   const gaveUp = new Promise<'gave up'>(done => {
     giveUp = () => done('gave up');
   });
-  const me = {ticks: 0, limit: job.limit, giveUp};
+  const me = {job, ticks: 0, limit: job.limit, giveUp};
   running = me;
   // So a pen hovering over the button doesn't lock (and open our view) mid-edit.
   palette.setBusy(true);
@@ -1244,6 +1283,7 @@ function runJobs(): void {
       if (!running) {
         palette.setBusy(false);
       }
+      updateWorking();
     });
 }
 
@@ -1507,6 +1547,9 @@ export function startPaletteController(): void {
   // Page edits wait out the Note app's redraws on the native clock: JS
   // timers stop while the panel is closed.
   setSleeper(ms => palette.wait(ms));
+  // And each edit waits out the pen lock's reloads, which only the native
+  // side times exactly.
+  setLockQuiet(() => palette.whenQuiet());
   // The host's word on the panel: start when it opens, from the toolbar or
   // anywhere else, and stop when the host closes it (not for our own
   // closePluginView). App.tsx only mounts once per plugin load, so it can't
@@ -1621,6 +1664,7 @@ export function stopPaletteController(): void {
   problemDetail = '';
   jobs.length = 0;
   running = null;
+  workingShown = false;
   penLocked = false;
   penDrag = {active: false, endedAt: 0};
   dragStrokes = [];

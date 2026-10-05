@@ -4,6 +4,7 @@ import {
   noteBusyFor,
   pageEdit,
   resetNoteGate,
+  setLockQuiet,
   setSleeper,
 } from '../src/sdk/noteGate';
 
@@ -54,5 +55,26 @@ describe('the note gate', () => {
     ).rejects.toThrow('refused');
     await pageEdit(async () => 1);
     expect(waits).toEqual([AFTER_EDIT_MS]);
+  });
+
+  it("waits for the pen lock's reloads before each edit, not reads", async () => {
+    const order: string[] = [];
+    let release = () => {};
+    setLockQuiet(
+      () =>
+        new Promise<void>(done => {
+          order.push('asked');
+          release = () => done();
+        }),
+    );
+    const edited = pageEdit(async () => {
+      order.push('edit');
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(order).toEqual(['asked']); // held until the lock has settled
+    release();
+    await edited;
+    expect(order).toEqual(['asked', 'edit']);
   });
 });

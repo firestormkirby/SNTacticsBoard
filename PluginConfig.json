@@ -1,6 +1,6 @@
 {
   "name": "Tactics Board",
-  "desc": "Coach's whiteboard for your notes: draw with the pen, and drag players, cones and balls onto the page from a floating button, and save layouts to load later.",
+  "desc": "Coach's whiteboard for your notes: draw with the pen, and drag players, cones and balls onto the page from a floating button, and save layouts to load later. Bug reports and feature requests: sebastiancraftco@gmail.com",
   "iconPath": "assets/icon.png",
   "versionName": "0.9",
   "versionCode": "3",
